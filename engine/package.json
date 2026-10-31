@@ -4,7 +4,7 @@
  "private": true,
  "scripts": {
   "start": "node server.js",
-  "test": "node --test test/employee.test.mjs"
+  "test": "node --test test/employee.test.mjs test/antiban.test.mjs"
  },
  "dependencies": {
   "@whiskeysockets/baileys": "^6.7.24",
@@ -15,5 +15,5 @@
  "engines": {
   "node": ">=20"
  },
- "version": "2.1.1"
+ "version": "2.2.0"
 }

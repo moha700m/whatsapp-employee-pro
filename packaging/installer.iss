@@ -1,9 +1,9 @@
 ; «موظف واتساب» — Inno Setup 6 script (Arabic-first, per-user, no admin).
 ; Build: ISCC packaging\installer.iss   (after PyInstaller → dist\WhatsAppEmployee)
 #define AppName "موظف واتساب"
-#define AppVer "2.1.1"
+#define AppVer "2.2.0"
 #define AppExe "WhatsAppEmployee.exe"
-#define Publisher "Mohammed (moha700m)"
+#define Publisher "Mohammed alzhrani"
 #define AppUrl "https://github.com/moha700m/whatsapp-employee-pro"
 
 [Setup]
@@ -57,7 +57,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
 arabic.WelcomeLabel1=هلا والله! خلنا نثبت «{#AppName}»
-arabic.WelcomeLabel2=بنثبت «{#AppName}» {#AppVer} على جهازك.%n%nالبرنامج يرتب محادثات واتساب وطلبات محلك، ويجهز لك الردود، وما يرسل شي بدون موافقتك.%n%nيفضّل تقفل البرامج الثانية قبل ما نكمل.
+arabic.WelcomeLabel2=بنثبت «{#AppName}» {#AppVer} على جهازك.%n%nالبرنامج يرتب محادثات واتساب وطلبات محلك، ويجهز لك الردود، وما يرسل شي بدون موافقتك.%n%nيفضّل تقفل البرامج الثانية قبل ما نكمل.%n%nتطوير: Mohammed alzhrani
 arabic.FinishedHeadingLabel=تمام، خلصنا التثبيت
 arabic.FinishedLabel=«{#AppName}» صار جاهز على جهازك. تلقاه في قائمة ابدأ وعلى سطح المكتب.
 arabic.FinishedLabelNoIcons=«{#AppName}» صار جاهز على جهازك.

@@ -18,8 +18,8 @@ export function makeFakeSocket() {
     ev.emit('connection.update', { connection: 'open' });
     if (history) ev.emit('messaging-history.set', history);
   };
-  sock.incoming = (jid, text, pushName, ts) => {
-    const m = { key: { remoteJid: jid, fromMe: false, id: 'IN' + crypto.randomBytes(6).toString('hex') }, pushName, messageTimestamp: Math.floor((ts || Date.now()) / 1000), message: { conversation: text } };
+  sock.incoming = (jid, text, pushName, ts, senderPn) => {
+    const m = { key: { remoteJid: jid, fromMe: false, ...(senderPn ? { senderPn } : {}), id: 'IN' + crypto.randomBytes(6).toString('hex') }, pushName, messageTimestamp: Math.floor((ts || Date.now()) / 1000), message: { conversation: text } };
     ev.emit('messages.upsert', { messages: [m], type: 'notify' });
     return m.key.id;
   };

@@ -21,4 +21,9 @@ def history(now=None):
         jid = f"9665000{k:05d}@s.whatsapp.net"; chats.append({"id": jid, "name": name})
         for i, (me, text, days) in enumerate(conv):
             msgs.append({"key": {"remoteJid": jid, "fromMe": bool(me), "id": f"D{k}_{i}"}, "messageTimestamp": int((now - days * DAY) / 1000), "message": {"conversation": text}})
+    # WhatsApp "LID" chats (random ids, not phone numbers): one resolvable via pnJid, one truly hidden
+    for k, (lid, pn, text, days) in enumerate([("182772702413028@lid", "966551230001@s.whatsapp.net", "السلام عليكم معك لمى، ابي بوكيه جوري لعيد ميلاد بكره حي النرجس", 0.12),
+                                                 ("63308489647951@lid", None, "هلا، كم سعر صندوق الورد؟", 0.4)]):
+        chats.append({"id": lid, **({"pnJid": pn} if pn else {})})
+        msgs.append({"key": {"remoteJid": lid, "fromMe": False, "id": f"L{k}"}, "messageTimestamp": int((now - days * DAY) / 1000), "message": {"conversation": text}})
     return {"chats": chats, "contacts": [], "messages": msgs}

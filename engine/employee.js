@@ -12,6 +12,9 @@ export const AUTO_DEFAULTS = {
   cooldownMin: 2,            // min minutes between two auto replies to the same customer
   maxPerDay: 6,              // max auto replies per customer per day
   ownerActiveMin: 10,        // if the owner replied by hand within this window, stay quiet
+  maxPerHour: 20,            // anti-ban: all customers together, per hour
+  maxTotalPerDay: 80,        // anti-ban: all customers together, per day (lower while a new number warms up)
+  humanTyping: true,         // anti-ban: read → typing… → send, with human timing
 };
 export const BAD_JID = j => !j || j.endsWith('@g.us') || j.endsWith('@broadcast') || j === 'status@broadcast' || j.endsWith('@newsletter');
 export const hm = (d, tz) => new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Asia/Riyadh', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
@@ -57,4 +60,4 @@ export function decide(chat, msg, ctx) {
 }
 export const SKIP_AR = { off: 'الموظف مطفي', not_customer: 'مو عميل (قروب/حالة)', from_me: 'رسالة منك', empty: 'رسالة بدون نص', old_message: 'رسالة قديمة',
   offline: 'الواتساب غير متصل', outside_schedule: 'خارج وقت عمل الموظف', owner_active: 'أنت ترد عليه بنفسك', cooldown: 'رد عليه قبل شوي', daily_limit: 'وصل حد الردود اليومي',
-  customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك' };
+  customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك', rate_limit: 'حماية الرقم: وصل حد الإرسال' };

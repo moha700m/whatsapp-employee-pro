@@ -20,7 +20,7 @@ CHECK_JS = r"""() => {
   if (!vis(e) || e.closest('[hidden]') || e.closest('svg')) continue;
   const own = [...e.childNodes].filter(n => n.nodeType === 3 && n.textContent.trim()).map(n => n.textContent.trim()).join(' ');
   if (own) {
-    const eng = own.match(/[A-Za-z]{3,}/g)?.filter(w => !['QR', 'VCF', 'CSV', 'Excel', 'PDF'].includes(w)); if (eng?.length) issues.push('english: ' + eng.join(',') + ' in "' + own.slice(0, 40) + '"');
+    const eng = own.match(/[A-Za-z]{3,}/g)?.filter(w => !['QR', 'VCF', 'CSV', 'Excel', 'PDF', 'Mohammed', 'alzhrani', 'Windows'].includes(w)); if (eng?.length) issues.push('english: ' + eng.join(',') + ' in "' + own.slice(0, 40) + '"');
     if (/lorem|undefined|NaN|null|\[object/i.test(own)) issues.push('placeholder text: ' + own.slice(0, 50));
     const fg = lum(getComputedStyle(e).color), bg = bgOf(e);
     if (fg && bg != null) { const ratio = (Math.max(fg.l, bg) + .05) / (Math.min(fg.l, bg) + .05); const fs = parseFloat(getComputedStyle(e).fontSize), bold = +getComputedStyle(e).fontWeight >= 700;
@@ -67,8 +67,9 @@ def main():
             cl.req("api/settings", {"shopName": "ورد الريحان", "city": "الرياض", "tourDone": True, "autoReply": {"enabled": True, "schedule": "always", "delaySec": 0}})
             cl.req("api/sim/incoming", {"jid": J(11), "text": "متى تفتحون اليوم؟", "name": "تركي"}); cl.req("api/sim/incoming", {"jid": J(9), "text": "ابي اطلب ستاند تهنئة", "name": "فيصل"})
             time.sleep(1.5); cl.req("api/settings", {"autoReply": {"enabled": False}})
-            for tag, w, h, dsf in SIZES:
-                pg = page_for(w, h, dsf); pg.goto(eng.url + "#home"); pg.wait_for_selector(".kpis"); shot(pg, "05_home", tag)
+            for theme, (tag0, w, h, dsf) in [(t, z) for t in ("light", "dark") for z in SIZES]:
+                tag = f"{theme}_{tag0}"; cl.req("api/settings", {"theme": theme})
+                pg = page_for(w, h, dsf); pg.goto(eng.url + "#home"); pg.wait_for_selector(".kpis"); pg.wait_for_timeout(400); shot(pg, "05_home", tag)
                 pg.click("[data-p=chats]"); pg.wait_for_selector(".ci"); pg.click(f".ci[data-j='{J(0)}']"); pg.wait_for_selector(".m"); pg.wait_for_timeout(600); shot(pg, "06_chat_thread", tag)
                 pg.click(f".ci[data-j='{J(11)}']"); pg.wait_for_selector(".m.auto"); shot(pg, "07_chat_auto_reply", tag)
                 pg.click(f".ci[data-j='{J(0)}']"); pg.wait_for_timeout(500); pg.click("#ex"); pg.wait_for_selector("#exo .notice"); shot(pg, "08_chat_extract_order", tag)
@@ -80,8 +81,12 @@ def main():
                 pg.click(".bigswitch input", force=True); pg.wait_for_selector("#modal:not([hidden])"); shot(pg, "14_employee_confirm", tag); pg.click("#mOk"); pg.wait_for_selector(".emp-hero.on"); shot(pg, "15_employee_on", tag)
                 pg.fill("#et", "متى تفتحون؟"); pg.click("#etb"); pg.wait_for_selector("#eto .notice"); shot(pg, "16_employee_test", tag)
                 pg.click(".bigswitch input", force=True); pg.wait_for_selector(".emp-hero:not(.on)")
-                for k in ["shop", "prices", "tpl", "brain", "rules", "sec", "log", "wa"]:
+                pg.click("[data-p=chats]"); pg.wait_for_selector(".ci"); pg.click("#cf [data-f=wait]"); pg.wait_for_timeout(300); shot(pg, "06b_chats_waiting_badges", tag); pg.click("#cf [data-f=all]")
+                pg.click(".ci[data-j='966551230001@s.whatsapp.net']"); pg.wait_for_selector(".pf-r"); pg.wait_for_timeout(300); shot(pg, "06c_chat_profile_lid_resolved", tag)
+                pg.click(".ci[data-j='63308489647951@lid']"); pg.wait_for_selector(".m"); pg.wait_for_timeout(300); shot(pg, "06d_chat_hidden_number", tag)
+                for k in ["shop", "prices", "tpl", "brain", "rules", "brand", "sec", "log", "wa", "about"]:
                     pg.click("[data-p=set]"); pg.click(f".setnav [data-t={k}]"); pg.wait_for_timeout(250); shot(pg, f"17_settings_{k}", tag)
+                pg.click("[data-p=set]"); pg.click(".setnav [data-t=wa]"); pg.click("#w1"); pg.wait_for_selector("#modal:not([hidden])"); shot(pg, "17z_disconnect_dialog", tag); pg.click("#mNo")
                 pg.click("#bell"); pg.wait_for_selector("#alertsPop:not([hidden])"); shot(pg, "18_alerts", tag); pg.keyboard.press("Escape")
                 pg.click("#help"); shot(pg, "19_help_menu", tag); pg.keyboard.press("Escape")
                 pg.click("[data-p=home]"); pg.keyboard.press("Tab"); pg.keyboard.press("Tab"); pg.keyboard.press("Tab"); shot(pg, "20_focus_ring", tag)
