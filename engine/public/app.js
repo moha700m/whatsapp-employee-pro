@@ -1,0 +1,430 @@
+'use strict';
+// موظف واتساب — واجهة البرنامج (بسيط وكبير)
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let CSRF = '', SET = {}, ST = {}, CRM = {}, CL = [], CH = null, PAGE = 'home', lastSig = '', FILTER = 'all', OCCS = [];
+const PAGES = [['home', 'الرئيسية'], ['chats', 'المحادثات'], ['sales', 'الطلبات والعملاء'], ['mkt', 'التسويق'], ['emp', 'الموظف'], ['set', 'الإعدادات']];
+const STAGES = ['جديد', 'قيد التجهيز', 'تم التوصيل', 'ملغي'];
+const toast = t => { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('on'), 2800) };
+const ago = t => { if (!t) return ''; const d = (Date.now() - t) / 6e4; if (d < 1) return 'الحين'; if (d < 60) return Math.floor(d) + ' د'; if (d < 1440) return Math.floor(d / 60) + ' س'; return Math.floor(d / 1440) + ' يوم' };
+const fmtT = t => new Date(t).toLocaleTimeString('ar-SA-u-ca-gregory', { hour: 'numeric', minute: '2-digit' });
+const fmtD = t => new Date(t).toLocaleDateString('ar-SA-u-ca-gregory', { weekday: 'long', day: 'numeric', month: 'long' });
+const fdate = iso => iso ? new Date(iso + 'T12:00:00').toLocaleDateString('ar-SA-u-ca-gregory', { day: 'numeric', month: 'long' }) : '';
+const nice = t => esc(t).replace(/\d{4}-\d{2}-\d{2}/g, m => fdate(m));
+const hm12 = s => { const [h, m] = String(s || '').split(':').map(Number); if (isNaN(h)) return s; const p = h < 12 ? 'الصبح' : h < 15 ? 'الظهر' : h < 18 ? 'العصر' : h < 19 ? 'المغرب' : 'الليل'; return num(h % 12 || 12) + (m ? ':' + String(m).padStart(2, '0').replace(/\d/g, d => '٠١٢٣٤٥٦٧٨٩'[d]) : '') + ' ' + p };
+const ini = n => esc((n || '؟').replace(/^\+/, '').trim().charAt(0) || '؟');
+const num = n => (+n || 0).toLocaleString('ar-SA');
+const money = n => num(n) + ' ر.س';
+const who = c => c.name || '+' + c.phone;
+async function api(p, b) {
+  const o = b === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf': CSRF }, body: JSON.stringify(b) };
+  const r = await fetch(p, o); if (r.status === 401) { showAuth(); throw new Error('login') }
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(j.error || 'تعذّر الاتصال'), { code: j.error }); return j;
+}
+// ---------- dialog (replaces window.confirm, keyboard friendly)
+function ask(title, html, ok = 'تأكيد', danger = false) {
+  return new Promise(res => {
+    const m = $('#modal'), prev = document.activeElement; $('#mTitle').textContent = title; $('#mBody').innerHTML = html; $('#mOk').textContent = ok;
+    $('#mOk').className = 'btn ' + (danger ? 'danger' : 'primary'); m.hidden = false; $('#mOk').focus();
+    const done = v => { m.hidden = true; document.removeEventListener('keydown', key); prev?.focus?.(); res(v) };
+    const key = e => { if (e.key === 'Escape') done(false); if (e.key === 'Tab') { const f = [$('#mOk'), $('#mNo')]; const i = f.indexOf(document.activeElement); e.preventDefault(); f[(i + (e.shiftKey ? 1 : 1)) % 2].focus() } };
+    document.addEventListener('keydown', key); $('#mOk').onclick = () => done(true); $('#mNo').onclick = () => done(false); m.onclick = e => { if (e.target === m) done(false) };
+  });
+}
+function brand(s) {
+  const c = s.brand || '#0A7A3E'; document.documentElement.style.setProperty('--brand', c);
+  const L = s.logo ? `<img src="${esc(s.logo)}" alt="">` : ini(s.name || s.shopName);
+  $('#logo').innerHTML = L; $('#authLogo').innerHTML = L; $('#shopName').textContent = s.name || s.shopName; document.title = (s.name || s.shopName) + ' — موظف واتساب';
+}
+// ---------- auth (only when the owner set a lock password)
+async function boot() { try { const a = await (await fetch('api/auth')).json(); brand(a.shop); LOCKED = a.locked; if (a.loggedIn) { CSRF = a.csrf; start() } else showAuth() } catch { setTimeout(boot, 1500) } }
+function showAuth() {
+  $('#app').hidden = true; $('#auth').hidden = false; $('#pw').focus();
+  $('#authForm').onsubmit = async e => {
+    e.preventDefault(); $('#authErr').textContent = '';
+    try { const r = await fetch('api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#pw').value }) }); const j = await r.json(); if (!r.ok) throw new Error(j.error); CSRF = j.csrf; $('#pw').value = ''; start() }
+    catch (x) { $('#authErr').textContent = x.message }
+  };
+}
+let started = false;
+async function start() {
+  $('#auth').hidden = true; $('#app').hidden = false; if (started) return go(PAGE); started = true;
+  $('#nav').innerHTML = PAGES.map(([k, l]) => `<button class="tab" data-p="${k}" data-tour="tab-${k}">${l}${k === 'chats' ? '<span class="cnt" id="wc" hidden></span>' : ''}</button>`).join('');
+  $$('[data-p]').forEach(b => b.onclick = () => go(b.dataset.p));
+  $('#bell').onclick = toggleAlerts; $('#help').onclick = toggleHelp; $('#empPill').onclick = () => go('emp');
+  await loadSettings(); await tick();
+  go(location.hash.slice(1) || 'home'); setInterval(tick, 2500);
+  if (!SET.tourDone) setTimeout(() => tour(0), 600);
+}
+// ---------- polling
+async function tick() {
+  try { ST = await api('api/state'); tick.fail = 0 } catch { tick.fail = (tick.fail || 0) + 1; const sb = $('#syncBar'); if (tick.fail >= 2) { $('#conn').className = 'pill conn bad'; $('#connTxt').textContent = 'منقطع'; sb.hidden = false; sb.className = 'syncbar bad'; sb.innerHTML = '<span class="spin"></span>انقطع الاتصال بمحرك البرنامج… نحاول نرجع. إذا طوّل اقفل البرنامج وافتحه.' } return }
+  $('#syncBar').className = 'syncbar';
+  const c = { connected: ['on', 'متصل'], qr: ['warn', 'بانتظار الربط'], reconnecting: ['warn', 'يعيد الاتصال'], loggedOut: ['bad', 'غير مربوط'], starting: ['', 'يبدأ…'] }[ST.status] || ['', ST.status];
+  $('#conn').className = 'pill conn ' + c[0]; $('#connTxt').textContent = c[1]; $('#conn').title = 'الواتساب: ' + c[1];
+  const e = ST.employee || {}; $('#empPill').className = 'pill ' + (e.active ? 'on' : e.enabled ? 'warn' : '');
+  $('#empTxt').textContent = e.active ? 'الموظف شغّال' : e.enabled ? 'الموظف ينتظر وقته' : 'الموظف مطفي';
+  $('#bellDot').hidden = !ST.unreadAlerts; if (ST.unreadAlerts > (tick.n ?? ST.unreadAlerts)) notify(); tick.n = ST.unreadAlerts;
+  const sb = $('#syncBar'); sb.hidden = !(ST.status === 'connected' && ST.syncing);
+  if (!sb.hidden) sb.innerHTML = `<span class="spin"></span>نحمّل محادثاتك القديمة من الجوال… وصلنا ${num(ST.chats)} محادثة و${num(ST.messages)} رسالة`;
+  if (PAGE === 'home' && (ST.status !== tick.s || (ST.syncing && ST.chats !== tick.c))) renderHome(); tick.s = ST.status; tick.c = ST.chats;
+  if (PAGE === 'chats') { await loadChats(); if (CH) drawThread() }
+}
+async function notify() { try { const a = await api('api/alerts'); const n = a.find(x => !x.read); if (n) { toast(n.text); if (window.Notification?.permission === 'granted' && document.hidden) new Notification(SET.shopName || 'تنبيه', { body: n.text }) } } catch { } }
+const KIND = { hot: ['r', 'فرصة'], new: ['b', 'جديد'], human: ['w', 'يحتاج ردك'] };
+async function toggleAlerts() {
+  const p = $('#alertsPop'); $('#helpPop').hidden = true; if (!p.hidden) return p.hidden = true; const A = await api('api/alerts');
+  p.innerHTML = `<div style="display:flex;align-items:center;padding:6px 8px"><b class="grow">التنبيهات</b>${A.some(a => !a.read) ? '<button class="btn sm" id="ra">تعليم الكل كمقروء</button>' : ''}</div>` +
+    (A.length ? A.map(a => `<div class="row" data-j="${esc(a.jid)}" tabindex="0"><span class="chip ${(KIND[a.kind] || KIND.new)[0]}">${(KIND[a.kind] || KIND.new)[1]}</span><div class="grow"><div style="${a.read ? '' : 'font-weight:700'}">${esc(a.text)}</div><small class="muted">${ago(a.t)}</small></div></div>`).join('') : '<div class="empty"><b>ما فيه تنبيهات</b>أول ما يكتب عميل مهتم أو جديد ينبهك هنا.</div>');
+  p.hidden = false; if ($('#ra')) $('#ra').onclick = async () => { await api('api/alerts/read', {}); p.hidden = true; tick() };
+  p.querySelectorAll('.row').forEach(r => r.onclick = r.onkeydown = e => { if (e.type === 'keydown' && e.key !== 'Enter') return; p.hidden = true; openChat(r.dataset.j) });
+}
+function toggleHelp() {
+  const p = $('#helpPop'); $('#alertsPop').hidden = true; if (!p.hidden) return p.hidden = true;
+  p.innerHTML = `<div style="padding:8px 10px"><b>المساعدة</b><p class="muted" style="font-size:14px">نسخة ${esc(ST.version || '')}</p></div>
+  <button class="btn ghost" id="h1">ابدأ الجولة التعريفية من جديد</button><button class="btn ghost" id="h2">اشرح لي هذي الصفحة</button><button class="btn ghost" id="h3">وش يقدر يسوي الموظف؟</button>`;
+  p.hidden = false; $('#h1').onclick = () => { p.hidden = true; go('home'); setTimeout(() => tour(0), 200) };
+  $('#h2').onclick = () => { p.hidden = true; showHint(PAGE, true) }; $('#h3').onclick = () => { p.hidden = true; go('emp'); setTimeout(() => showHint('emp', true), 100) };
+}
+document.addEventListener('click', e => { for (const [p, b] of [['#alertsPop', '#bell'], ['#helpPop', '#help']]) { const el = $(p); if (!el.hidden && !el.contains(e.target) && !$(b).contains(e.target)) el.hidden = true } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('#alertsPop').hidden = true; $('#helpPop').hidden = true } });
+async function loadSettings() { const j = await api('api/crm'); CRM = j.crm; SET = j.settings; OCCS = j.occasions || []; brand(SET) }
+function go(p) {
+  if (!PAGES.find(x => x[0] === p)) p = 'home'; PAGE = p; history.replaceState(null, '', '#' + p);
+  $$('[data-p]').forEach(b => { b.classList.toggle('on', b.dataset.p === p); b.setAttribute('aria-current', b.dataset.p === p ? 'page' : 'false') });
+  $$('.page').forEach(s => s.hidden = s.id !== 'p-' + p); showHint(p);
+  const R = { home: renderHome, chats: renderChats, sales: renderSales, mkt: renderMkt, emp: renderEmp, set: renderSet }[p];
+  loadSettings().then(R, () => { $('#p-' + p).innerHTML = errBox('البرنامج ما يرد الحين', () => go(p)) });
+}
+// ---------- per-screen hints (skippable, re-openable from «؟»)
+const HINTS = {
+  home: ['الرئيسية', 'هنا ملخص يومك: كم عميل ينتظر ردك، مين جاهز يشتري، الطلبات المفتوحة والمتابعات. اضغط على أي اسم يفتح محادثته.'],
+  chats: ['المحادثات', 'كل محادثاتك القديمة والجديدة. اختر عميل، وتحت خانة الرد تلقى ردود مقترحة من المساعد وردودك الجاهزة. ما ينرسل شي إلا لما تضغط «إرسال» وتأكد.'],
+  sales: ['الطلبات والعملاء', 'كل الطلبات المسجّلة وحالتها، ومسار العملاء من «جديد» إلى «تم التوصيل». غيّر حالة الطلب من هنا، وتصنيف العميل من ملفه داخل المحادثة.'],
+  mkt: ['التسويق', 'اكتب حملة لمناسبة بضغطة، جهّز رسالة جماعية كمسودة، واطلع العملاء القدامى اللي تقدر ترجعهم. الإرسال دايم بيدك.'],
+  emp: ['الموظف', 'الموظف يرد على عملائك تلقائياً لما تشغّله: يرحّب ويجاوب الأسئلة البسيطة، وإذا العميل يبي يطلب أو يسأل عن سعر أو عنده شكوى يقوله «لحظات» وينبهك ترد بنفسك. مطفي لين تشغّله أنت.'],
+  set: ['الإعدادات', 'بيانات المحل، قائمة الأسعار اللي يعتمد عليها المساعد، الردود الجاهزة، التنبيهات، قفل البرنامج، والسجل.'],
+};
+function showHint(p, force) {
+  const h = $('#hint'), off = SET.hintsOff || []; if (!HINTS[p] || (!force && off.includes(p))) { h.hidden = true; return }
+  h.innerHTML = `<svg aria-hidden="true"><use href="#i-help"/></svg><div class="grow"><b>${HINTS[p][0]}</b>${HINTS[p][1]}</div><button class="btn sm" id="hintX">فهمت</button>`; h.hidden = false;
+  $('#hintX').onclick = async () => { h.hidden = true; fitChat(); if (!off.includes(p)) { SET = await api('api/settings', { hintsOff: [...off, p] }) } };
+}
+// ---------- first-run guided tour
+const TOUR = [
+  { t: 'هلا والله 👋', b: 'هذا «موظف واتساب»: يرتب محادثات محلك، يساعدك ترد أسرع، ويرد عن بالك لما تبي. خذ جولة سريعة (دقيقة وحدة).', el: null },
+  { t: 'اربط الواتساب', b: 'من الرئيسية تمسح رمز QR من جوال المحل مرة وحدة بس. بعدها تنزل محادثاتك القديمة كلها وتبقى محفوظة حتى لو قفلت البرنامج.', el: '[data-tour=tab-home]' },
+  { t: 'المحادثات', b: 'هنا كل العملاء. افتح أي محادثة، اختر رد مقترح أو اكتب ردك، واضغط «إرسال».', el: '[data-tour=tab-chats]' },
+  { t: 'الطلبات والعملاء', b: 'الطلبات اللي تسجلها (أو يطلعها المساعد من المحادثة) وحالتها، ومبيعاتك.', el: '[data-tour=tab-sales]' },
+  { t: 'التسويق', b: 'حملات المناسبات، الرسائل الجماعية كمسودة، وترجيع العملاء القدامى.', el: '[data-tour=tab-mkt]' },
+  { t: 'الموظف (الرد الآلي)', b: 'شغّله ويرد على العملاء بنفسه، ويحوّل لك الطلبات والأسعار والشكاوى. هذا الزر يوريك حالته دايم.', el: '[data-tour=emp]' },
+  { t: 'التنبيهات', b: 'لما يكتب عميل جاهز يشتري أو يحتاج ردك، يطلع لك تنبيه هنا.', el: '[data-tour=bell]' },
+  { t: 'المساعدة', b: 'تبي الشرح مرة ثانية؟ اضغط علامة الاستفهام في أي وقت.', el: '[data-tour=help]' },
+];
+function tour(i) {
+  const T = $('#tour'), step = TOUR[i]; if (!step) return endTour(); T.hidden = false;
+  $('#tourN').textContent = `${num(i + 1)} من ${num(TOUR.length)}`; $('#tourT').textContent = step.t; $('#tourB').textContent = step.b;
+  $('#tourPrev').hidden = i === 0; $('#tourNext').textContent = i === TOUR.length - 1 ? 'يلا نبدأ' : 'التالي';
+  const hole = $('#tourHole'), card = T.querySelector('.tour-card'), el = step.el && $(step.el);
+  if (el) { const r = el.getBoundingClientRect(); Object.assign(hole.style, { top: r.top - 6 + 'px', left: r.left - 6 + 'px', width: r.width + 12 + 'px', height: r.height + 12 + 'px' });
+    const cw = Math.min(380, innerWidth - 32); let left = Math.min(Math.max(16, r.left + r.width / 2 - cw / 2), innerWidth - cw - 16);
+    Object.assign(card.style, { top: r.bottom + 18 + 'px', left: left + 'px' }) }
+  else { Object.assign(hole.style, { top: '50%', left: '50%', width: '0px', height: '0px' }); Object.assign(card.style, { top: 'calc(50% - 120px)', left: `calc(50% - ${Math.min(380, innerWidth - 32) / 2}px)` }) }
+  $('#tourNext').onclick = () => tour(i + 1); $('#tourPrev').onclick = () => tour(i - 1); $('#tourSkip').onclick = endTour; $('#tourNext').focus();
+  T.onkeydown = e => { if (e.key === 'Escape') endTour(); if (e.key === 'ArrowLeft') tour(i + 1); if (e.key === 'ArrowRight' && i) tour(i - 1) };
+}
+async function endTour() { $('#tour').hidden = true; if (!SET.tourDone) { SET = await api('api/settings', { tourDone: true }) } }
+// ---------- HOME
+async function renderHome() {
+  const el = $('#p-home');
+  if (ST.status && ST.status !== 'connected') {
+    el.innerHTML = `<div class="link card"><div class="qrbox">${ST.qr ? `<img src="${ST.qr}" alt="رمز QR لربط الواتساب">` : '<div style="text-align:center"><span class="spin" style="width:36px;height:36px;color:var(--brand);display:inline-block"></span><p class="muted" style="margin-top:12px">نجهّز الرمز…</p></div>'}</div>
+    <div><h1 style="font-size:30px;font-weight:800">اربط واتساب المحل</h1><p class="muted" style="font-size:17px;margin-top:6px">${ST.status === 'loggedOut' ? 'انفصل الرقم من الجوال. امسح الرمز من جديد.' : ST.status === 'reconnecting' ? 'نعيد الاتصال… لحظات.' : 'مرة وحدة بس، وبعدها يبقى مربوط حتى لو قفلت البرنامج.'}</p>
+    <ol class="steps"><li>افتح واتساب في جوال المحل</li><li>اضغط ⋮ أو الإعدادات ← الأجهزة المرتبطة</li><li>اضغط «ربط جهاز» وامسح الرمز</li></ol>
+    <div class="notice g">بعد الربط تنزل محادثاتك القديمة تلقائياً. البرنامج ما يرسل أي رسالة إلا لما تضغط «إرسال» بنفسك، أو تشغّل الموظف.</div>
+    ${ST.sim ? '<button class="btn primary big" id="simLink" style="margin-top:16px">ربط تجريبي</button>' : ''}</div></div>`;
+    if ($('#simLink')) $('#simLink').onclick = () => api('api/sim/link', { me: '966500000000', history: window.SIM_HISTORY }).then(tick);
+    return;
+  }
+  if (!el.querySelector('.kpis')) el.innerHTML = '<div class="card"><div class="skel" style="width:40%;height:28px"></div><div class="skel"></div><div class="skel" style="width:70%"></div></div>';
+  let d; try { d = await api('api/dashboard') } catch (x) { el.innerHTML = errBox('ما قدرنا نجيب الملخص', renderHome); return }
+  const a = d.analytics, days = [...Array(14)].map((_, i) => new Date(Date.now() - (13 - i) * 864e5).toISOString().slice(0, 10)), mx = Math.max(1, ...days.map(x => a.msgsByDay[x] || 0));
+  const h = new Date().getHours(), hi = h < 12 ? 'صباح الخير' : 'مساء الخير';
+  const rt = a.medianResponseMin == null ? '—' : a.medianResponseMin < 60 ? num(a.medianResponseMin) + ' د' : num(Math.round(a.medianResponseMin / 60)) + ' س';
+  el.innerHTML = `<div class="page-h"><div><h1>${hi}، ${esc(SET.shopName)}</h1><p>${fmtD(Date.now())} · ${ST.open ? 'المحل مفتوح الحين' : 'خارج ساعات العمل'}</p></div>
+   <div class="act"><button class="btn primary" id="toChats">افتح المحادثات${a.waiting ? ` <span class="cnt" style="background:#fff;color:var(--brand)">${num(a.waiting)}</span>` : ''}</button></div></div>
+  <div class="grid kpis" style="margin-bottom:var(--s4)">
+   <div class="kpi main"><div class="v">${num(a.waiting)}</div><div class="l">محادثة تنتظر ردك</div></div>
+   <div class="kpi"><div class="v">${money(a.revenue)}</div><div class="l">مبيعات مسجّلة · ${num(a.orders)} طلب</div></div>
+   <div class="kpi"><div class="v">${num(a.conversion)}٪</div><div class="l">نسبة التحويل · ${num(a.customers)} عميل</div></div>
+   <div class="kpi"><div class="v">${rt}</div><div class="l">متوسط وقت ردك</div></div></div>
+  <div class="hero"><div class="card"><h3><svg aria-hidden="true"><use href="#i-spark"/></svg>خطة اليوم<button class="btn sm soft act" id="brf">${d.briefing ? 'حدّث الخطة' : 'جهّز خطة اليوم'}</button></h3>
+   <div class="brief" id="brief">${d.briefing ? esc(d.briefing.text) : '<span class="muted">اضغط «جهّز خطة اليوم» ويطلع لك مين ترد عليه أول ومين تتابعه.</span>'}</div></div>
+   <div class="card"><h3><svg aria-hidden="true" style="color:var(--hot)"><use href="#i-flame"/></svg>جاهزين للشراء<button class="btn sm soft act" id="score">قيّم العملاء</button></h3>
+   ${d.hot.length ? d.hot.slice(0, 5).map(x => `<div class="row" data-j="${esc(x.jid)}" tabindex="0"><div class="av">${ini(who(x))}</div><div class="grow"><b class="ell" style="display:block">${esc(who(x))}</b><small class="muted ell" style="display:block">${esc(x.reason || x.last.text || '')}</small></div><span class="chip r">${num(x.score)}</span></div>`).join('') : '<div class="empty"><b>ما فيه أحد حالياً</b>أول ما يسأل عميل عن سعر أو توصيل يطلع هنا.</div>'}</div></div>
+  <div class="grid g3"><div class="card"><h3><svg aria-hidden="true" style="color:var(--warn)"><use href="#i-clock"/></svg>متابعات اليوم <span class="chip w">${num(d.reminders.length)}</span></h3>
+   ${d.reminders.length ? d.reminders.slice(0, 6).map(r => `<div class="row" data-j="${esc(r.jid)}" tabindex="0"><div class="av">${ini(r.name)}</div><div class="grow"><b class="ell" style="display:block">${esc(r.name)}</b><small class="muted">${esc(r.why)}</small></div></div>`).join('') : '<div class="empty"><b>كل العملاء متابَعين</b>ما فيه متابعات مستحقة.</div>'}</div>
+   <div class="card"><h3><svg aria-hidden="true"><use href="#i-box"/></svg>طلبات مفتوحة <span class="chip g">${num(d.orders.length)}</span></h3>
+   ${d.orders.length ? d.orders.slice(0, 6).map(o => `<div class="row" data-j="${esc(o.jid)}" tabindex="0"><div class="grow"><b class="ell" style="display:block">${esc(o.item)}</b><small class="muted">${esc(o.name)}${o.deliveryDate ? ' · ' + fdate(o.deliveryDate) : ''}</small></div><span class="chip">${esc(o.status || 'جديد')}</span></div>`).join('') : '<div class="empty"><b>ما فيه طلبات مفتوحة</b>سجّل الطلب من ملف العميل داخل المحادثة.</div>'}</div>
+   <div class="card"><h3>رسائل العملاء آخر ١٤ يوم</h3><div class="bars" role="img" aria-label="عدد رسائل العملاء يومياً">${days.map((x, i) => `<div class="${i === 13 ? 'hi' : ''}" style="height:${(a.msgsByDay[x] || 0) / mx * 100}%" title="${x}: ${a.msgsByDay[x] || 0}"></div>`).join('')}</div>
+   <div class="bars-l">${days.map((x, i) => `<span>${i % 3 ? '' : num(+x.slice(8))}</span>`).join('')}</div>
+   <p class="muted" style="margin-top:10px;font-size:14px">نشط هالأسبوع: ${num(a.active7)} عميل${a.autoToday ? ` · الموظف رد ${num(a.autoToday)} مرة اليوم` : ''}</p></div></div>`;
+  el.querySelectorAll('.row[data-j]').forEach(r => r.onclick = r.onkeydown = e => { if (e.type === 'keydown' && e.key !== 'Enter') return; openChat(r.dataset.j) });
+  $('#toChats').onclick = () => go('chats');
+  $('#brf').onclick = async e => { const b = e.currentTarget; b.disabled = true; try { const r = await api('api/ai/briefing', {}); $('#brief').textContent = r.text; b.textContent = 'حدّث الخطة' } catch (x) { toast('تعذّر: ' + x.message) } b.disabled = false };
+  $('#score').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = 'نقيّم…'; try { const r = await api('api/ai/score-all', {}); toast('تم تقييم ' + num(r.scored) + ' عميل'); renderHome() } catch (x) { toast(x.code === 'brain_off' ? 'المساعد مقفل من الإعدادات' : 'تعذّر التقييم'); b.disabled = false; b.textContent = 'قيّم العملاء' } };
+}
+function errBox(t, retry) { // shown when the local engine does not answer
+ setTimeout(() => { const b = $('#retry'); if (b) b.onclick = retry }, 0); return `<div class="card empty"><b>${t}</b>تأكد إن البرنامج شغّال وجرب مرة ثانية.<div style="margin-top:12px"><button class="btn" id="retry">إعادة المحاولة</button></div></div>` }
+// ---------- CHATS
+function renderChats() {
+  const el = $('#p-chats');
+  if (ST.status !== 'connected') { el.innerHTML = `<div class="card empty"><b>الواتساب غير مربوط</b>اربطه من الرئيسية وتطلع محادثاتك هنا.<div style="margin-top:12px"><button class="btn primary" id="gl">اربط الحين</button></div></div>`; $('#gl').onclick = () => go('home'); return }
+  el.innerHTML = `<div class="chatwrap ${innerWidth < 1200 ? '' : ''}" id="cw"><div class="card clist"><div class="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input id="cq" placeholder="ابحث بالاسم أو الرقم" aria-label="ابحث بالاسم أو الرقم"></div>
+   <div class="filters" style="margin:12px 0" id="cf" role="group" aria-label="تصفية"></div><div id="cl"></div></div>
+   <div class="card thread" id="th"><div class="empty" style="margin:auto"><b>اختر محادثة</b>من القائمة على اليمين.</div></div><div class="card side-panel" id="sp"><div class="empty">ملف العميل يطلع هنا</div></div></div>`;
+  $('#cq').oninput = drawList; drawFilters(); fitChat(); lastSig = ''; loadChats().then(() => { if (CH) openChat(CH) });
+}
+function drawFilters() {
+  const f = [['all', 'الكل'], ['wait', 'تنتظر رد'], ['hot', 'ساخن'], ['orders', 'عندهم طلب']], isTag = FILTER.startsWith('t:') || FILTER === 'resolved';
+  $('#cf').innerHTML = f.map(([k, l]) => `<button data-f="${esc(k)}" class="${FILTER === k ? 'on' : ''}" aria-pressed="${FILTER === k}">${esc(l)}</button>`).join('') +
+   `<select id="cfs" aria-label="تصفية حسب التصنيف" style="width:auto;min-height:36px;padding:4px 10px;font-size:14px;font-weight:700;${isTag ? 'border-color:var(--ink)' : ''}"><option value="">التصنيف…</option>${(SET.tags || []).map(t => `<option value="t:${esc(t)}" ${FILTER === 't:' + t ? 'selected' : ''}>${esc(t)}</option>`).join('')}<option value="resolved" ${FILTER === 'resolved' ? 'selected' : ''}>منتهية</option></select>`;
+  $('#cf').querySelectorAll('button').forEach(b => b.onclick = () => { FILTER = b.dataset.f; drawFilters(); drawList() });
+  $('#cfs').onchange = e => { FILTER = e.target.value || 'all'; drawFilters(); drawList() };
+}
+function fitChat() { const w = $('#cw'); if (!w) return; const top = w.getBoundingClientRect().top + scrollY; w.style.height = Math.max(480, innerHeight - top - 20) + 'px' }
+addEventListener('resize', fitChat);
+async function loadChats() {
+  try { CL = await api('api/chats') } catch { return }
+  const w = CL.filter(c => !c.fromMe && c.status !== 'resolved').length, e = $('#wc'); if (e) { e.hidden = !w; e.textContent = num(w) }
+  if ($('#cl')) drawList();
+}
+function drawList() {
+  const q = ($('#cq')?.value || '').trim(); let l = CL.filter(c => !q || ((c.name || '') + c.phone).includes(q.replace(/^\+/, '')));
+  if (FILTER === 'wait') l = l.filter(c => !c.fromMe && c.status !== 'resolved'); else if (FILTER === 'hot') l = l.filter(c => c.score >= SET.hotScore);
+  else if (FILTER === 'orders') l = l.filter(c => c.orders); else if (FILTER === 'resolved') l = l.filter(c => c.status === 'resolved');
+  else if (FILTER.startsWith('t:')) l = l.filter(c => c.tag === FILTER.slice(2)); else l = l.filter(c => c.status !== 'resolved');
+  const h = l.slice(0, 400).map(c => `<button class="ci ${c.jid === CH ? 'on' : ''}" data-j="${esc(c.jid)}"><div class="av">${ini(who(c))}</div><div class="grow"><div class="t1"><b class="ell grow">${esc(who(c))}</b><small>${ago(c.lastAt)}</small></div>
+   <div class="t2"><small class="ell grow">${c.fromMe ? (c.auto ? 'الموظف: ' : 'أنت: ') : ''}${esc(c.last)}</small>${c.score >= SET.hotScore ? '<span class="chip r">ساخن</span>' : ''}${!c.fromMe && c.status !== 'resolved' ? '<span class="chip w">ينتظر</span>' : ''}</div></div></button>`).join('');
+  const cl = $('#cl'); if (cl._h !== h) { cl.innerHTML = h || `<div class="empty"><b>${CL.length ? 'ما فيه نتائج' : ST.syncing ? 'نحمّل المحادثات…' : 'ما فيه محادثات للحين'}</b>${CL.length ? 'جرّب تصفية ثانية.' : ''}</div>`; cl._h = h; cl.querySelectorAll('.ci').forEach(r => r.onclick = () => openChat(r.dataset.j)) }
+}
+async function openChat(j) { CH = j; lastSig = ''; if (PAGE !== 'chats') { go('chats'); return } drawList(); await drawThread(true) }
+async function drawThread(full) {
+  let c; try { c = await api('api/chat?jid=' + encodeURIComponent(CH)) } catch { return } const th = $('#th'); if (!c || !th) return;
+  if (full || !th.querySelector('.msgs')) {
+    th.innerHTML = `<div class="th-head"><div class="av">${ini(who(c))}</div><div class="grow"><b class="ell" style="display:block">${esc(who(c))}</b><small class="muted" dir="ltr">+${esc(c.phone)}</small></div>
+     <label class="sr" for="cst" hidden>حالة المحادثة</label><select id="cst" aria-label="حالة المحادثة"><option value="open">مفتوحة</option><option value="pending">معلّقة</option><option value="resolved">منتهية</option></select>
+     <button class="btn sm" id="pt" aria-label="ملف العميل"><svg aria-hidden="true"><use href="#i-user"/></svg>ملف العميل</button></div>
+     <div class="autobar" id="ab" hidden><span class="spin"></span>الموظف بيرد عليه خلال ثواني — إذا رديت أنت يلغي رده.</div>
+     <div class="msgs" id="ms" aria-live="polite"></div>
+     <div class="composer" style="position:relative"><div class="sugs" id="sg"></div><div class="slash" id="sl" hidden></div>
+      <div class="bar"><textarea id="tx" rows="1" placeholder="اكتب ردك هنا… (اكتب / للردود الجاهزة)" aria-label="نص الرد"></textarea><button class="btn primary" id="sd"><svg aria-hidden="true"><use href="#i-send"/></svg>إرسال</button></div></div>`;
+    $('#cst').value = c.crm.status || 'open'; $('#cst').onchange = () => saveCRM({ status: $('#cst').value }).then(() => { toast('تم تحديث الحالة'); loadChats() });
+    $('#pt').onclick = () => $('#cw').classList.toggle(innerWidth < 1200 ? 'panel' : 'nopanel');
+    $('#tx').oninput = () => { slash(); const t = $('#tx'); t.style.height = 'auto'; t.style.height = Math.min(160, t.scrollHeight + 2) + 'px' };
+    $('#tx').onkeydown = e => { const sl = $('#sl'); if (!sl.hidden && e.key === 'Enter') { e.preventDefault(); sl.querySelector('[data-i]')?.click() } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() };
+    $('#sd').onclick = send; drawSugs(); drawPanel(c); suggest();
+  }
+  $('#ab').hidden = !c.pendingAuto;
+  const sig = c.messages.length + ':' + (c.messages.at(-1)?.id || ''); if (sig === lastSig) return; lastSig = sig; let pd = ''; const ms = $('#ms');
+  ms.innerHTML = c.messages.length ? c.messages.map(m => { const d = new Date(m.ts).toDateString(); const sep = d !== pd ? `<div class="daysep">${fmtD(m.ts)}</div>` : ''; pd = d;
+    return sep + `<div class="m ${m.fromMe ? 'me' : 'them'} ${m.auto ? 'auto' : ''}">${m.auto ? '<span class="who"><svg aria-hidden="true"><use href="#i-bot"/></svg>رد الموظف</span>\n' : ''}${esc(m.text)}<time>${fmtT(m.ts)}</time></div>` }).join('') : '<div class="empty">ما فيه رسائل</div>';
+  ms.scrollTop = ms.scrollHeight; if (!full) suggest();
+}
+let SUG = [];
+function drawSugs() {
+  const t = (SET.templates || []).map((x, i) => `<button class="sug tpl" data-t="${i}" title="${esc(x.t)}">${esc(x.k)}</button>`).join('');
+  const s = SUG.map((r, i) => `<button class="sug" data-s="${i}" title="${esc(r)}">${nice(r)}</button>`).join('');
+  $('#sg').innerHTML = (s ? `<div class="sugrow"><span class="sug-l">مقترح</span>${s}</div>` : '') + (t ? `<div class="sugrow"><span class="sug-l">جاهز</span>${t}</div>` : '');
+  $('#sg').querySelectorAll('[data-t]').forEach(b => b.onclick = () => ins(SET.templates[b.dataset.t].t)); $('#sg').querySelectorAll('[data-s]').forEach(b => b.onclick = () => ins(SUG[b.dataset.s], true));
+}
+function ins(t, replace) { const tx = $('#tx'); tx.value = replace || !tx.value ? t : tx.value + ' ' + t; tx.focus(); tx.dispatchEvent(new Event('input')); $('#sl').hidden = true }
+function slash() {
+  const v = $('#tx').value, sl = $('#sl'); if (!v.startsWith('/')) { sl.hidden = true; return } const q = v.slice(1); const l = (SET.templates || []).filter(x => (x.k + x.t).includes(q));
+  sl.innerHTML = l.map(x => `<div data-i="${SET.templates.indexOf(x)}"><b>/${esc(x.k)}</b> <small class="muted">${esc(x.t.slice(0, 60))}</small></div>`).join('') || '<div class="muted">ما فيه رد بهذا الاسم</div>'; sl.hidden = false;
+  sl.querySelectorAll('[data-i]').forEach(d => d.onclick = () => ins(SET.templates[d.dataset.i].t, true));
+}
+async function suggest() { const j0 = CH; try { const j = await api('api/ai/suggest', { jid: CH }); if (j0 !== CH) return; SUG = j.replies || [] } catch { SUG = [] } if ($('#sg')) drawSugs() }
+async function send() {
+  const text = $('#tx').value.trim(); if (!text) { $('#tx').focus(); return toast('اكتب الرد أول') }
+  const c = CL.find(x => x.jid === CH); if (!await ask('ترسل هذي الرسالة؟', `<p class="muted" style="margin-bottom:8px">إلى: <b>${esc(c ? who(c) : '')}</b></p><div class="quote">${esc(text)}</div>`, 'إرسال')) return;
+  const b = $('#sd'); b.disabled = true;
+  try { await api('api/send', { jid: CH, text, confirm: true }); $('#tx').value = ''; $('#tx').style.height = ''; lastSig = ''; await drawThread(); loadChats(); toast('انرسلت ✓') }
+  catch (e) { toast('ما انرسلت: ' + e.message) } b.disabled = false;
+}
+async function saveCRM(data) { CRM[CH] = await api('api/crm', { jid: CH, data }); return CRM[CH] }
+function drawPanel(c) {
+  const cr = c.crm || {}, sp = $('#sp'); let tag = cr.tag || 'جديد', ORD = [...(cr.orders || [])];
+  sp.innerHTML = `<h3 style="display:flex;align-items:center">ملف العميل<button class="icon-btn" id="cpx" aria-label="إغلاق ملف العميل" style="margin-inline-start:auto"><svg><use href="#i-x"/></svg></button></h3>
+  ${cr.aiSummary ? `<div class="notice b">${nice(cr.aiSummary)}</div>` : ''}
+  <label class="lbl">التصنيف</label><div class="filters" id="tg">${(SET.tags || []).map(t => `<button class="${tag === t ? 'on' : ''}" data-t="${esc(t)}" aria-pressed="${tag === t}">${esc(t)}</button>`).join('')}</div>
+  <label class="lbl" for="fu">موعد متابعة</label><input type="date" id="fu" value="${esc(cr.followUp || '')}">
+  <label class="lbl" for="nt">ملاحظات (ما يشوفها العميل)</label><textarea id="nt" placeholder="مثلاً: يحب الجوري الأبيض">${esc(cr.note || '')}</textarea>
+  <h3 style="margin-top:18px;display:flex;align-items:center">الطلبات<button class="btn sm soft" id="ex" style="margin-inline-start:auto"><svg aria-hidden="true"><use href="#i-spark"/></svg>طلّع الطلب</button></h3>
+  <div id="exo"></div><div id="od"></div>
+  <label class="lbl" for="oi">إضافة طلب</label><input id="oi" placeholder="الطلب، مثلاً: بوكيه جوري">
+  <div class="grid g2" style="gap:8px;margin-top:8px"><input id="oa" type="number" min="0" inputmode="numeric" placeholder="المبلغ" aria-label="المبلغ"><input type="date" id="odd" aria-label="موعد التوصيل"></div>
+  <button class="btn sm" id="oad" style="margin-top:8px">+ أضف الطلب</button>
+  <button class="btn primary block" id="sv" style="margin-top:18px">حفظ الملف</button>`;
+  const drawO = () => { $('#od').innerHTML = ORD.length ? ORD.map((o, i) => `<div class="order"><div class="grow"><b class="ell" style="display:block">${esc(o.item)}</b><small class="muted">${money(o.amount)}${o.deliveryDate ? ' · ' + fdate(o.deliveryDate) : ''}</small></div>
+    <select data-i="${i}" aria-label="حالة الطلب" style="width:auto;min-height:36px">${STAGES.map(x => `<option ${(o.status || 'جديد') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('') : '<p class="muted" style="font-size:14px">ما فيه طلبات مسجّلة</p>';
+    $('#od').querySelectorAll('select').forEach(s => s.onchange = () => ORD[s.dataset.i].status = s.value) }; drawO();
+  $('#cpx').onclick = () => { const w = $('#cw'); if (innerWidth < 1200) w.classList.remove('panel'); else w.classList.add('nopanel') };
+  $('#tg').querySelectorAll('button').forEach(b => b.onclick = () => { tag = b.dataset.t; $('#tg').querySelectorAll('button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b) }) });
+  $('#oad').onclick = () => { const it = $('#oi').value.trim(); if (!it) { $('#oi').focus(); return toast('اكتب الطلب أول') } ORD.push({ item: it, amount: +$('#oa').value || 0, deliveryDate: $('#odd').value, status: 'جديد', date: Date.now() }); $('#oi').value = $('#oa').value = $('#odd').value = ''; drawO() };
+  $('#sv').onclick = async () => { try { await saveCRM({ tag, followUp: $('#fu').value, note: $('#nt').value, orders: ORD }); toast('انحفظ ✓'); loadChats() } catch (x) { toast('تعذّر الحفظ') } };
+  $('#ex').onclick = async e => { const b = e.currentTarget; b.disabled = true; $('#exo').innerHTML = '<div class="skel"></div>';
+    try { const j = await api('api/ai/extract', { jid: CH });
+      $('#exo').innerHTML = `<div class="notice b" style="margin-top:8px"><b>${esc(j.stage)} · احتمال الشراء ${num(j.score)}٪</b><div style="font-size:14px">${esc(j.reason)}</div>${j.missing?.length ? `<div style="font-size:14px">ناقص: ${esc(j.missing.join('، '))}</div>` : ''}
+       ${(j.orders || []).map((o, i) => `<div class="order" style="background:#fff"><div class="grow">${esc(o.item)} — ${money(o.amount)}${o.deliveryDate ? ' · ' + fdate(o.deliveryDate) : ''}${o.address ? `<div><small>${esc(o.address)}</small></div>` : ''}</div><button class="btn sm primary" data-i="${i}">أضف</button></div>`).join('') || '<div style="font-size:14px">ما لقيت طلب واضح في المحادثة</div>'}</div>`;
+      $('#exo').querySelectorAll('[data-i]').forEach(x => x.onclick = () => { const o = j.orders[x.dataset.i]; ORD.push({ item: o.item, amount: +o.amount || 0, deliveryDate: o.deliveryDate || '', status: 'جديد', date: Date.now(), address: o.address || '' }); drawO(); x.remove(); toast('أضفناه — اضغط «حفظ الملف»') });
+      if (j.stage && (SET.tags || []).includes(j.stage)) { tag = j.stage; $('#tg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.t === tag)) } }
+    catch (x) { $('#exo').innerHTML = `<p class="err">${x.code === 'brain_off' ? 'المساعد مقفل من الإعدادات' : 'تعذّر الاستخراج'}</p>` } b.disabled = false };
+}
+// ---------- SALES (orders + pipeline + reports)
+async function renderSales() {
+  const el = $('#p-sales'); let d, O; try { await loadChats(); [d, O] = await Promise.all([api('api/dashboard'), api('api/orders')]) } catch { el.innerHTML = errBox('ما قدرنا نجيب الطلبات', renderSales); return }
+  const a = d.analytics, A = ST.analysis;
+  const cols = (SET.tags || []).map(t => { const cs = CL.filter(c => c.tag === t);
+    return `<div class="col"><h4><span>${esc(t)}</span><span class="chip">${num(cs.length)}</span></h4>${cs.slice(0, 30).map(c => `<button class="deal" data-j="${esc(c.jid)}"><b class="ell" style="display:block">${esc(who(c))}</b><small class="muted">${ago(c.lastAt)}${c.score >= SET.hotScore ? ' · ساخن' : ''}</small></button>`).join('') || '<p class="muted" style="font-size:14px">ما فيه أحد</p>'}</div>` }).join('');
+  el.innerHTML = `<div class="page-h"><div><h1>الطلبات والعملاء</h1><p>كل طلب مسجّل، ومكان كل عميل في مسار البيع.</p></div></div>
+  <div class="grid kpis" style="margin-bottom:var(--s4)"><div class="kpi main"><div class="v">${money(a.revenue)}</div><div class="l">إجمالي المبيعات</div></div><div class="kpi"><div class="v">${num(a.orders)}</div><div class="l">طلب</div></div><div class="kpi"><div class="v">${num(a.avgOrder)}</div><div class="l">متوسط الطلب (ر.س)</div></div><div class="kpi"><div class="v">${num(a.buyers)}</div><div class="l">عميل اشترى</div></div></div>
+  <div class="card" style="margin-bottom:var(--s4)"><h3><svg aria-hidden="true"><use href="#i-box"/></svg>الطلبات</h3>${O.length ? `<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>الطلب</th><th>العميل</th><th>المبلغ</th><th>التوصيل</th><th>الحالة</th></tr></thead><tbody>${O.map(o => `<tr><td><b>${esc(o.item)}</b>${o.address ? `<div><small class="muted">${esc(o.address)}</small></div>` : ''}</td><td><button class="btn sm ghost" data-j="${esc(o.jid)}">${esc(o.name)}</button></td><td style="white-space:nowrap">${money(o.amount)}</td><td style="white-space:nowrap">${o.deliveryDate ? fdate(o.deliveryDate) : '—'}</td>
+   <td><select data-oj="${esc(o.jid)}" data-oi="${o.i}" aria-label="حالة الطلب">${STAGES.map(x => `<option ${(o.status || 'جديد') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty"><b>ما فيه طلبات للحين</b>افتح محادثة عميل واضغط «طلّع الطلب» أو أضفه يدوي من ملف العميل.</div>'}</div>
+  <div class="card" style="margin-bottom:var(--s4)"><h3>مسار العملاء</h3><div class="pipe">${cols}</div></div>
+  <div class="card"><h3>ترتيب كل المحادثات وتصديرها<button class="btn sm primary act" id="org">رتّب الحين</button></h3>
+  ${A ? `<p>${esc(A.summary)}</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><a class="btn" href="report.html" target="_blank" rel="noopener">تقرير للطباعة</a><a class="btn" href="contacts.vcf" download>جهات اتصال VCF</a><a class="btn" href="contacts.csv" download>ملف Excel ‏CSV</a></div>` : '<p class="muted">اضغط «رتّب الحين» ونرتب لك كل المحادثات: مين طلب، وش المعلّق، ومين ما انرد عليه — وتقدر تصدّرها.</p>'}</div>`;
+  el.querySelectorAll('[data-j]').forEach(x => x.onclick = () => openChat(x.dataset.j));
+  el.querySelectorAll('select[data-oj]').forEach(s => s.onchange = async () => { try { await api('api/orders/status', { jid: s.dataset.oj, i: +s.dataset.oi, status: s.value }); toast('تم تحديث الطلب') } catch { toast('تعذّر التحديث') } });
+  $('#org').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = 'نرتّب…'; try { ST.analysis = await api('api/analyze', {}); renderSales() } catch { toast('تعذّر الترتيب'); b.disabled = false; b.textContent = 'رتّب الحين' } };
+}
+// ---------- MARKETING
+function renderMkt() {
+  const el = $('#p-mkt'), tagOpts = `<option value="">كل العملاء</option>${(SET.tags || []).map(t => `<option>${esc(t)}</option>`).join('')}`;
+  el.innerHTML = `<div class="page-h"><div><h1>التسويق</h1><p>حملات جاهزة بلهجتنا. كلها مسودات — الإرسال بيدك.</p></div></div>
+  <div class="grid g2"><div class="card"><h3><svg aria-hidden="true"><use href="#i-spark"/></svg>حملة مناسبة</h3>
+   <label class="lbl" for="oc">المناسبة</label><select id="oc">${OCCS.map(o => `<option>${esc(o)}</option>`).join('')}<option value="_">مناسبة ثانية…</option></select><input id="oc2" placeholder="اكتب المناسبة" aria-label="اسم المناسبة" hidden style="margin-top:8px">
+   <label class="lbl" for="ot">الجمهور</label><select id="ot">${tagOpts}</select>
+   <label class="lbl" for="of">عرض تبي تقدمه (اختياري)</label><input id="of" placeholder="مثلاً: توصيل مجاني فوق ٢٠٠ ريال">
+   <button class="btn primary" id="gen" style="margin-top:16px">اكتب الحملة</button><div id="cmp" style="margin-top:12px"></div></div>
+  <div class="card"><h3>رسالة جماعية (مسودة)</h3><p class="muted" style="font-size:14px;margin-top:-6px">لكل عميل زر يفتح محادثته في واتساب والنص جاهز، وأنت تضغط إرسال.</p>
+   <label class="lbl" for="bt">للتصنيف</label><select id="bt">${tagOpts}</select>
+   <label class="lbl" for="bx">النص</label><textarea id="bx" placeholder="هلا {الاسم}…"></textarea><p class="help-t">اكتب {الاسم} ويتبدل باسم كل عميل.</p>
+   <button class="btn" id="bg" style="margin-top:10px">جهّز القائمة</button><div id="bo" style="margin-top:12px"></div></div>
+  <div class="card" style="grid-column:1/-1"><h3>رجّع العملاء القدامى<button class="btn sm soft act" id="re">طلّع القائمة</button></h3><div id="ro"><p class="muted">عملاء ما تواصلوا من أكثر من ${num(SET.dormantDays)} يوم — نجهز لهم رسالة ترجعهم.</p></div></div></div>`;
+  $('#oc').onchange = () => $('#oc2').hidden = $('#oc').value !== '_';
+  $('#gen').onclick = async () => { $('#cmp').innerHTML = '<div class="skel"></div>';
+    try { const j = await api('api/ai/campaign', { occasion: $('#oc').value === '_' ? $('#oc2').value : $('#oc').value, tag: $('#ot').value, offer: $('#of').value }); const all = [j.message, ...(j.variants || [])];
+      $('#cmp').innerHTML = `<div class="notice g"><b>${esc(j.idea)}</b><div style="font-size:14px">العرض: ${esc(j.offer)} · أفضل وقت: ${esc(j.timing)}</div></div>${all.map((m, i) => `<pre class="draft">${esc(m)}</pre><button class="btn sm" data-m="${i}" style="margin-top:6px">استخدمها كمسودة</button>`).join('')}<ul style="margin:12px 0 0;padding-inline-start:20px">${j.tips.map(t => `<li class="muted" style="font-size:14px">${esc(t)}</li>`).join('')}</ul>`;
+      $('#cmp').querySelectorAll('[data-m]').forEach(b => b.onclick = () => { $('#bx').value = all[b.dataset.m]; $('#bt').value = $('#ot').value; $('#bx').focus(); toast('انحطت في الرسالة الجماعية') }) }
+    catch { $('#cmp').innerHTML = '<p class="err">تعذّر كتابة الحملة</p>' } };
+  $('#bg').onclick = async () => { const t = $('#bx').value.trim(); if (!t) { $('#bx').focus(); return toast('اكتب النص أول') } await loadChats(); const l = CL.filter(c => !$('#bt').value || c.tag === $('#bt').value).filter(c => /^\d{8,15}$/.test(c.phone));
+    $('#bo').innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b class="grow">${num(l.length)} مستلم</b><button class="btn sm" id="cp">نسخ القائمة</button></div>` + l.slice(0, 300).map(c => `<div class="row" style="cursor:default"><div class="grow ell">${esc(who(c))}</div><a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/${esc(c.phone)}?text=${encodeURIComponent(t.replaceAll('{الاسم}', c.name || ''))}">افتح في واتساب</a></div>`).join('');
+    $('#cp').onclick = () => navigator.clipboard.writeText(t + '\n\n' + l.map(c => (c.name || '') + ' +' + c.phone).join('\n')).then(() => toast('انسخت'), () => toast('تعذّر النسخ')) };
+  $('#re').onclick = async e => { const b = e.currentTarget; b.disabled = true; try { const j = await api('api/ai/reengage', {});
+    $('#ro').innerHTML = `<pre class="draft">${esc(j.message)}</pre><button class="btn sm" id="ru" style="margin:8px 0">استخدمها كمسودة</button>` + (j.list.length ? j.list.map(c => `<div class="row" data-j="${esc(c.jid)}" tabindex="0"><div class="av">${ini(c.name)}</div><div class="grow"><b>${esc(c.name)}</b><div><small class="muted">آخر تواصل قبل ${num(c.days)} يوم${c.bought ? ' · اشترى قبل' : ''}</small></div></div></div>`).join('') : '<div class="empty"><b>ما فيه عملاء خاملين</b>كل عملائك تواصلوا مؤخراً.</div>');
+    $('#ru').onclick = () => { $('#bx').value = j.message; $('#bx').focus() }; $('#ro').querySelectorAll('.row').forEach(r => r.onclick = () => openChat(r.dataset.j)) } catch { toast('تعذّر') } b.disabled = false };
+}
+// ---------- EMPLOYEE (auto-reply)
+const AUDIT_AR = { manual_send: 'إرسال منك', auto_reply: 'رد الموظف', auto_handoff: 'الموظف حوّله لك', auto_skip: 'الموظف ما رد', auto_reply_failed: 'فشل رد الموظف', auto_reply_enabled: 'تشغيل الموظف', auto_reply_disabled: 'إيقاف الموظف',
+  login: 'دخول', login_failed: 'محاولة دخول فاشلة', password_changed: 'تعيين كلمة المرور', password_removed: 'إزالة كلمة المرور', settings_changed: 'تعديل الإعدادات', whatsapp_linked: 'ربط الواتساب', whatsapp_unlinked: 'فصل الواتساب', order_status: 'تحديث طلب', send_failed: 'فشل إرسال' };
+const auditRow = a => `<div class="row"><span class="chip ${a.type === 'auto_reply' ? 'g' : a.type === 'auto_handoff' ? 'w' : /failed/.test(a.type) ? 'x' : ''}">${esc(AUDIT_AR[a.type] || a.type)}</span><div class="grow">${a.to ? `<b>${esc(a.to)}</b>` : ''}${a.why ? ` <span class="muted">— ${esc(a.why)}</span>` : ''}${a.q ? `<div style="font-size:14px">العميل: «${esc(a.q)}»</div>` : ''}${a.preview ? `<div class="muted" style="font-size:14px">${esc(a.preview)}</div>` : ''}${a.err ? `<div class="err">${esc(a.err)}</div>` : ''}</div><small class="muted" style="white-space:nowrap">${ago(a.t)}</small></div>`;
+async function renderEmp() {
+  const el = $('#p-emp'), ar = SET.autoReply, e = ST.employee || {};
+  const statusTxt = !ar.enabled ? 'مطفي — ما يرد على أحد' : e.active ? 'شغّال الحين ويرد على العملاء' : 'مشغّل، بس الحين مو وقته (حسب الوقت اللي اخترته)';
+  el.innerHTML = `<div class="emp-hero ${ar.enabled ? 'on' : ''}"><div class="ic"><svg aria-hidden="true"><use href="#i-bot"/></svg></div><div class="grow"><h2>الموظف ${ar.enabled ? 'شغّال' : 'مطفي'}</h2><p>${statusTxt}</p></div>
+   <label class="bigswitch" title="تشغيل/إيقاف الموظف"><input type="checkbox" id="e0" ${ar.enabled ? 'checked' : ''} aria-label="تشغيل الموظف"><span></span></label></div>
+  ${ST.status !== 'connected' ? '<div class="notice" style="margin-bottom:16px">الواتساب غير مربوط، فالموظف ما يقدر يرد لين تربطه.</div>' : ''}
+  <div class="grid g2"><div class="card"><h3>متى يرد؟</h3><div class="choice" id="sch">
+    ${[['always', 'دايم', 'يرد على أي رسالة في أي وقت'], ['offhours', 'خارج الدوام فقط', `برا ساعات المحل (${hm12(SET.hoursFrom)} – ${hm12(SET.hoursTo)})`], ['custom', 'وقت أحدده', 'من ساعة إلى ساعة']].map(([v, l, h]) => `<label><input type="radio" name="sch" value="${v}" ${ar.schedule === v ? 'checked' : ''}><span><b>${l}</b><small>${h}</small></span></label>`).join('')}</div>
+    <div class="grid g2" id="cust" ${ar.schedule === 'custom' ? '' : 'hidden'} style="gap:8px"><div><label class="lbl" for="e1">من الساعة</label><input type="time" id="e1" value="${esc(ar.from)}"></div><div><label class="lbl" for="e2">إلى الساعة</label><input type="time" id="e2" value="${esc(ar.to)}"></div></div>
+    <h3 style="margin-top:22px">وش يرد؟</h3><div class="choice">
+    <label><input type="radio" name="mode" value="smart" ${ar.mode === 'smart' ? 'checked' : ''}><span><b>رد ذكي</b><small>يفهم العميل ويرد: ترحيب، أوقات الدوام، التوصيل، معاني الورد، العناية… من معلومات محلك.</small></span></label>
+    <label><input type="radio" name="mode" value="fixed" ${ar.mode === 'fixed' ? 'checked' : ''}><span><b>رسالة ثابتة</b><small>نفس الرسالة لكل عميل.</small></span></label></div>
+    <label class="lbl" for="e3">الرسالة الثابتة</label><textarea id="e3" style="min-height:72px">${esc(ar.message)}</textarea></div>
+   <div class="card"><h3>الأمان والحدود</h3>
+    <div class="setrow"><div class="grow"><b>حوّل لي الطلبات والأسعار والشكاوى</b><div class="help-t">يرد على العميل «لحظات» وينبهك ترد بنفسك. ننصح تخليه شغّال.</div></div><label class="switch"><input type="checkbox" id="e4" ${ar.handoff ? 'checked' : ''} aria-label="تحويل الطلبات لي"><span></span></label></div>
+    <label class="lbl" for="e5">رسالة التحويل</label><textarea id="e5" style="min-height:72px">${esc(ar.handoffMessage)}</textarea>
+    <div class="grid g2" style="gap:8px"><div><label class="lbl" for="e6">ينتظر قبل الرد (ثانية)</label><input type="number" id="e6" min="0" max="600" value="${ar.delaySec}"></div>
+    <div><label class="lbl" for="e7">أقل وقت بين ردّين لنفس العميل (دقيقة)</label><input type="number" id="e7" min="0" max="1440" value="${ar.cooldownMin}"></div>
+    <div><label class="lbl" for="e8">أقصى ردود للعميل باليوم</label><input type="number" id="e8" min="1" max="50" value="${ar.maxPerDay}"></div>
+    <div><label class="lbl" for="e9">يسكت إذا رديت أنت خلال (دقيقة)</label><input type="number" id="e9" min="0" max="240" value="${ar.ownerActiveMin}"></div></div>
+    <p class="help-t" style="margin-top:10px">ما يرد أبداً على القروبات أو الحالات، ولا على أي عميل كتب «وقف».</p>
+    <button class="btn primary" id="esv" style="margin-top:16px">حفظ الإعدادات</button></div></div>
+  <div class="grid g2" style="margin-top:var(--s4)"><div class="card"><h3>جرّب الموظف</h3><p class="muted" style="font-size:14px;margin-top:-6px">اكتب رسالة كأنك عميل وشوف وش بيرد. (ما ينرسل شي)</p>
+    <div class="bar" style="margin-top:10px"><input id="et" placeholder="مثلاً: متى تفتحون؟" aria-label="رسالة تجربة"><button class="btn" id="etb">جرّب</button></div><div id="eto" style="margin-top:12px"></div></div>
+   <div class="card"><h3>آخر شغل الموظف</h3><div id="elog" class="audit"><div class="skel"></div></div></div></div>`;
+  $$('input[name=sch]').forEach(r => r.onchange = () => $('#cust').hidden = r.value !== 'custom' || !r.checked);
+  const body = () => ({ schedule: $('input[name=sch]:checked').value, mode: $('input[name=mode]:checked').value, from: $('#e1').value, to: $('#e2').value, message: $('#e3').value, handoff: $('#e4').checked, handoffMessage: $('#e5').value, delaySec: +$('#e6').value, cooldownMin: +$('#e7').value, maxPerDay: +$('#e8').value, ownerActiveMin: +$('#e9').value });
+  $('#e0').onchange = async ev => { const on = ev.target.checked;
+    if (on && !await ask('تشغّل الموظف؟', `<p>بيرد على عملائك تلقائياً <b>${{ always: 'في أي وقت', offhours: 'خارج الدوام', custom: `من ${hm12($('#e1').value)} إلى ${hm12($('#e2').value)}` }[$('input[name=sch]:checked').value]}</b>${$('#e4').checked ? '، ويحوّل لك الطلبات والأسعار والشكاوى' : ''}. كل رد ينسجل وتقدر تطفيه بأي وقت.</p>`, 'شغّله')) { ev.target.checked = false; return }
+    try { SET = await api('api/settings', { autoReply: { ...body(), enabled: on } }); await tick(); toast(on ? 'الموظف شغّال ✓' : 'انطفى الموظف'); renderEmp() } catch { ev.target.checked = !on; toast('تعذّر الحفظ') } };
+  $('#esv').onclick = async () => { try { SET = await api('api/settings', { autoReply: body() }); await tick(); toast('انحفظ ✓'); renderEmp() } catch { toast('تعذّر الحفظ') } };
+  const tryIt = async () => { const t = $('#et').value.trim(); if (!t) return $('#et').focus(); try { const j = await api('api/employee/test', { text: t });
+    $('#eto').innerHTML = j.action === 'skip' ? `<div class="notice">ما بيرد: ${esc(j.reason === 'customer_said_stop' ? 'العميل طلب ما نراسله' : j.reason)}</div>` : `<div class="notice ${j.action === 'handoff' ? '' : 'g'}"><b>${j.action === 'handoff' ? 'بيحوّله لك ويرد:' : 'بيرد:'}</b><div style="white-space:pre-wrap;margin-top:4px">${esc(j.text)}</div></div>` } catch (x) { toast('تعذّر: ' + x.message) } };
+  $('#etb').onclick = tryIt; $('#et').onkeydown = e => { if (e.key === 'Enter') tryIt() };
+  try { const l = (await api('api/audit')).filter(a => /^auto_/.test(a.type)).slice(0, 12); $('#elog').innerHTML = l.length ? l.map(auditRow).join('') : '<div class="empty"><b>ما رد على أحد للحين</b>أول ما يرد يطلع هنا.</div>' } catch { $('#elog').innerHTML = '<p class="err">تعذّر تحميل السجل</p>' }
+}
+// ---------- SETTINGS
+let SETTAB = 'shop';
+const SETTABS = [['shop', 'المحل'], ['prices', 'الأسعار والمنتجات'], ['tpl', 'الردود الجاهزة'], ['brain', 'المساعد'], ['rules', 'المتابعة والتنبيهات'], ['brand', 'الشكل والهوية'], ['sec', 'القفل والأمان'], ['log', 'السجل'], ['wa', 'الواتساب']];
+async function renderSet() {
+  const el = $('#p-set'), s = SET; let logo = s.logo, brandC = s.brand, T = (s.templates || []).map(x => ({ ...x })), P = (s.products || []).map(x => ({ ...x }));
+  const sw = (id, v, l, h) => `<div class="setrow"><div class="grow"><b>${l}</b>${h ? `<div class="help-t">${h}</div>` : ''}</div><label class="switch"><input type="checkbox" id="${id}" ${v ? 'checked' : ''} aria-label="${esc(l)}"><span></span></label></div>`;
+  const body = {
+    shop: `<h3>بيانات المحل</h3><label class="lbl" for="s1">اسم المحل</label><input id="s1" value="${esc(s.shopName)}"><div class="grid g2" style="gap:12px"><div><label class="lbl" for="s2">النشاط</label><input id="s2" value="${esc(s.shopType)}"></div><div><label class="lbl" for="s3">المدينة</label><input id="s3" value="${esc(s.city)}"></div></div>
+     <div class="grid g2" style="gap:12px"><div><label class="lbl" for="s6">يفتح الساعة</label><input type="time" id="s6" value="${esc(s.hoursFrom)}"></div><div><label class="lbl" for="s7">يقفل الساعة</label><input type="time" id="s7" value="${esc(s.hoursTo)}"></div></div>
+     <label class="lbl" for="s4">نبذة عن المحل</label><textarea id="s4" placeholder="وش تبيعون، وش يميزكم…">${esc(s.about)}</textarea><label class="lbl" for="s5">التوصيل والدفع</label><textarea id="s5" style="min-height:72px" placeholder="مثلاً: نوصل داخل المدينة بـ ٣٠ ريال، والدفع تحويل أو مدى">${esc(s.delivery)}</textarea>`,
+    prices: `<h3>الأسعار والمنتجات</h3><p class="muted" style="font-size:14px">المساعد ما يذكر للعميل أي سعر غير الموجود هنا. اتركها فاضية ويستخدم القائمة الافتراضية.</p>
+     <div class="prod" style="margin-top:14px;font-weight:700;font-size:13px;color:var(--muted)"><span>المنتج</span><span>السعر (ر.س)</span><span>أسماء ثانية يقولها العميل</span><span></span></div><div id="pl"></div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button class="btn sm" id="pa">+ منتج</button><button class="btn sm ghost" id="pd">عبّها بالقائمة الافتراضية</button></div>`,
+    tpl: `<h3>الردود الجاهزة</h3><p class="muted" style="font-size:14px">تطلع كأزرار تحت خانة الرد، أو اكتب / واختر. الضغط يحط النص فقط — الإرسال بيدك.</p><div id="tl" style="margin-top:12px"></div><button class="btn sm" id="ta">+ رد جديد</button>
+     <label class="lbl" for="tg2">تصنيفات العملاء (افصل بفاصلة)</label><input id="tg2" value="${esc((s.tags || []).join('، '))}">`,
+    brain: `<h3>المساعد</h3><div class="notice g">مساعد سعودي يشتغل على جهازك بدون نت وبدون اشتراك: يفهم وش يبي العميل، يقترح ردود، يطلّع الطلبات من المحادثة، ويقيّم العملاء.</div>
+     ${sw('a1', s.aiEnabled, 'تشغيل المساعد', 'الاقتراحات، استخراج الطلبات، تقييم العملاء، والرد الذكي للموظف')}
+     <label class="lbl" for="a2">أسلوب الكلام</label><select id="a2">${['ودودة ومحترفة', 'رسمية', 'شبابية خفيفة', 'فخمة وراقية'].map(t => `<option ${s.aiTone === t ? 'selected' : ''}>${t}</option>`).join('')}</select>`,
+    rules: `<h3>المتابعة والتنبيهات</h3><div class="grid g2" style="gap:12px"><div><label class="lbl" for="u1">ذكّرني إذا ما رديت على عميل بعد (يوم)</label><input type="number" id="u1" value="${s.followUpDays}" min="0" max="60"></div><div><label class="lbl" for="u2">العميل يعتبر قديم بعد (يوم)</label><input type="number" id="u2" value="${s.dormantDays}" min="3" max="365"></div></div>
+     <label class="lbl" for="u3">من كم يعتبر العميل «ساخن»؟ (٠–١٠٠)</label><input type="number" id="u3" value="${s.hotScore}" min="10" max="100">${sw('u4', s.notifyHot, 'نبهني لما يكتب عميل جاهز يشتري')}${sw('u5', s.notifyNew, 'نبهني لما يكتب عميل جديد')}
+     <button class="btn sm" id="np" style="margin-top:12px">تفعيل إشعارات ويندوز</button>`,
+    brand: `<h3>الشكل والهوية</h3><label class="lbl">الشعار</label><div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div class="logo-lg" id="lp">${s.logo ? `<img src="${esc(s.logo)}" alt="">` : ini(s.shopName)}</div><label class="btn sm" for="lf">اختر صورة</label><input type="file" id="lf" accept="image/png,image/jpeg,image/webp" hidden><button class="btn sm ghost" id="lr">إزالة</button></div>
+     <label class="lbl" for="bc">اللون الأساسي</label><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="color" id="bc" value="${esc(s.brand)}" style="width:56px;height:44px;border:0;background:none;padding:0">${['#0A7A3E', '#B0305A', '#7A3E8E', '#B4470C', '#0F6E6E', '#1D4ED8'].map(c => `<button class="icon-btn" data-c="${c}" style="background:${c}" aria-label="لون ${c}"></button>`).join('')}</div>
+     <p class="help-t">اختر لون غامق عشان النص الأبيض يبان واضح.</p>`,
+    sec: `<h3>القفل والأمان</h3><p class="muted" style="font-size:15px">${store_locked() ? 'البرنامج مقفل بكلمة مرور.' : 'البرنامج يفتح مباشرة بدون كلمة مرور. تقدر تقفله إذا الجهاز يستخدمه أكثر من شخص.'}</p>
+     ${store_locked() ? '<label class="lbl" for="x2">كلمة المرور الحالية</label><input type="password" id="x2" autocomplete="current-password">' : ''}
+     <label class="lbl" for="x3">${store_locked() ? 'كلمة مرور جديدة (اتركها فاضية لإزالة القفل)' : 'كلمة مرور جديدة (٦ أحرف أو أكثر)'}</label><input type="password" id="x3" autocomplete="new-password">
+     <button class="btn sm" id="x4" style="margin-top:10px">${store_locked() ? 'تحديث' : 'اقفل البرنامج'}</button>
+     <label class="lbl" for="x1">اقفل تلقائياً بعد عدم استخدام (دقيقة)</label><input type="number" id="x1" value="${s.sessionMinutes}" min="5" max="720">
+     <div class="notice b" style="margin-top:16px">بياناتك محفوظة على جهازك فقط، مع نسخة احتياطية يومية. البرنامج ما يرسل شي لأي جهة.</div>`,
+    log: `<h3>السجل</h3><div id="lg" class="audit"><div class="skel"></div></div>`,
+    wa: `<h3>الواتساب</h3><p>الرقم المربوط: <b dir="ltr">${ST.me ? '+' + esc(ST.me) : '—'}</b></p><p class="muted" style="margin-top:6px">${num(ST.chats)} محادثة · ${num(ST.messages)} رسالة محفوظة</p>
+     <p class="muted" style="margin-top:12px">فصل الرقم يمسح المحادثات المحفوظة هنا ويطلع رمز QR جديد. ملفات العملاء والطلبات والإعدادات تبقى.</p><button class="btn danger" id="w1" style="margin-top:12px">فصل الرقم وإعادة الربط</button>`,
+  }[SETTAB];
+  el.innerHTML = `<div class="page-h"><div><h1>الإعدادات</h1></div></div><div class="setwrap"><nav class="setnav" aria-label="أقسام الإعدادات">${SETTABS.map(([k, l]) => `<button data-t="${k}" class="${SETTAB === k ? 'on' : ''}" aria-current="${SETTAB === k}">${l}</button>`).join('')}</nav>
+   <div class="card setcard">${body}${['log', 'wa', 'sec'].includes(SETTAB) ? '' : '<button class="btn primary" id="sv" style="margin-top:20px">حفظ</button>'}</div></div>`;
+  el.querySelectorAll('.setnav [data-t]').forEach(b => b.onclick = () => { SETTAB = b.dataset.t; renderSet() });
+  const v = id => $('#' + id)?.value, c = id => $('#' + id)?.checked;
+  if (SETTAB === 'brand') { $('#lf').onchange = e => { const f = e.target.files[0]; if (!f) return; if (f.size > 200000) return toast('الصورة كبيرة (الحد ٢٠٠ كيلوبايت)'); const r = new FileReader(); r.onload = () => { logo = r.result; $('#lp').innerHTML = `<img src="${esc(logo)}" alt="">` }; r.readAsDataURL(f) };
+    $('#lr').onclick = () => { logo = ''; $('#lp').textContent = ini(s.shopName) }; $('#bc').oninput = e => { brandC = e.target.value; document.documentElement.style.setProperty('--brand', brandC) };
+    el.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { brandC = b.dataset.c; $('#bc').value = brandC; document.documentElement.style.setProperty('--brand', brandC) }) }
+  if (SETTAB === 'tpl') { const drawT = () => { $('#tl').innerHTML = T.map((x, i) => `<div class="grid" style="grid-template-columns:150px minmax(0,1fr) 44px;gap:8px;margin-bottom:8px"><input data-k="${i}" value="${esc(x.k)}" aria-label="اسم الرد"><input data-v="${i}" value="${esc(x.t)}" aria-label="نص الرد"><button class="icon-btn" data-d="${i}" aria-label="حذف الرد"><svg><use href="#i-x"/></svg></button></div>`).join('');
+    $('#tl').querySelectorAll('[data-k]').forEach(e => e.oninput = () => T[e.dataset.k].k = e.value); $('#tl').querySelectorAll('[data-v]').forEach(e => e.oninput = () => T[e.dataset.v].t = e.value); $('#tl').querySelectorAll('[data-d]').forEach(e => e.onclick = () => { T.splice(e.dataset.d, 1); drawT() }) }; drawT(); $('#ta').onclick = () => { T.push({ k: 'رد جديد', t: '' }); drawT(); $('#tl').querySelector('[data-v]:last-of-type')?.focus() } }
+  if (SETTAB === 'prices') { const drawP = () => { $('#pl').innerHTML = P.length ? P.map((p, i) => `<div class="prod"><input data-n="${i}" value="${esc(p.name)}" aria-label="اسم المنتج"><input data-p="${i}" type="number" min="0" value="${p.price || ''}" aria-label="السعر"><input data-a="${i}" value="${esc((p.aliases || []).join('، '))}" aria-label="أسماء ثانية"><button class="icon-btn" data-d="${i}" aria-label="حذف المنتج"><svg><use href="#i-x"/></svg></button></div>`).join('') : '<p class="muted" style="font-size:14px;padding:8px 0">يستخدم القائمة الافتراضية حالياً.</p>';
+    $('#pl').querySelectorAll('[data-n]').forEach(e => e.oninput = () => P[e.dataset.n].name = e.value); $('#pl').querySelectorAll('[data-p]').forEach(e => e.oninput = () => P[e.dataset.p].price = +e.value);
+    $('#pl').querySelectorAll('[data-a]').forEach(e => e.oninput = () => P[e.dataset.a].aliases = e.value.split(/[،,]/).map(x => x.trim()).filter(Boolean)); $('#pl').querySelectorAll('[data-d]').forEach(e => e.onclick = () => { P.splice(e.dataset.d, 1); drawP() }) }; drawP();
+    $('#pa').onclick = () => { P.push({ name: '', price: 0, aliases: [] }); drawP() };
+    if (!P.length) api('api/brain/products').then(j => { if (P.length || SETTAB !== 'prices') return; P = j.defaults.map(x => ({ ...x })); drawP(); $('#pl').insertAdjacentHTML('beforebegin', '<div class="notice b" style="margin-bottom:10px">هذي الأسعار الافتراضية. عدّلها على أسعار محلك واضغط «حفظ».</div>') }).catch(() => {}); $('#pd').onclick = async () => { const j = await api('api/brain/products'); P = j.defaults.map(x => ({ ...x })); drawP(); toast('انضافت — عدّل الأسعار واضغط حفظ') } }
+  if (SETTAB === 'rules') $('#np').onclick = () => window.Notification ? Notification.requestPermission().then(p => toast(p === 'granted' ? 'تم التفعيل' : 'ما تفعّلت')) : toast('غير مدعوم');
+  if (SETTAB === 'sec') { $('#x4').onclick = async () => { try { const r = await api('api/auth/password', { old: v('x2'), password: v('x3') }); toast(r.locked ? 'انقفل البرنامج بكلمة مرور ✓' : 'انشال القفل'); LOCKED = r.locked; renderSet() } catch (e) { toast(e.message) } };
+    $('#x1').onchange = async () => { SET = await api('api/settings', { sessionMinutes: +v('x1') }); toast('انحفظ ✓') } }
+  if (SETTAB === 'log') api('api/audit').then(l => { $('#lg').innerHTML = l.filter(a => a.type !== 'auto_skip').length ? l.filter(a => a.type !== 'auto_skip').slice(0, 200).map(auditRow).join('') : '<div class="empty"><b>السجل فاضي</b>كل إرسال وتعديل ينسجل هنا.</div>' }).catch(() => $('#lg').innerHTML = '<p class="err">تعذّر تحميل السجل</p>');
+  if (SETTAB === 'wa') $('#w1').onclick = async () => { if (!await ask('تفصل الرقم؟', '<p>بتنمسح المحادثات المحفوظة ويطلع رمز QR جديد. ملفات العملاء والطلبات تبقى.</p>', 'افصل الرقم', true)) return; await api('api/logout', {}); toast('انفصل. نجهز رمز جديد…'); setTimeout(() => go('home'), 1500) };
+  const sv = $('#sv'); if (sv) sv.onclick = async () => { const b = {};
+    if (SETTAB === 'shop') { if (!v('s1').trim()) { $('#s1').focus(); return toast('اكتب اسم المحل') } Object.assign(b, { shopName: v('s1'), shopType: v('s2'), city: v('s3'), about: v('s4'), delivery: v('s5'), hoursFrom: v('s6'), hoursTo: v('s7') }) }
+    if (SETTAB === 'brand') Object.assign(b, { logo, brand: brandC }); if (SETTAB === 'brain') Object.assign(b, { aiEnabled: c('a1'), aiTone: v('a2') });
+    if (SETTAB === 'tpl') Object.assign(b, { templates: T.filter(x => x.t.trim()), tags: v('tg2').split(/[،,]/).map(x => x.trim()).filter(Boolean) });
+    if (SETTAB === 'prices') b.products = P.filter(p => p.name.trim());
+    if (SETTAB === 'rules') Object.assign(b, { followUpDays: +v('u1'), dormantDays: +v('u2'), hotScore: +v('u3'), notifyHot: c('u4'), notifyNew: c('u5') });
+    sv.disabled = true; try { SET = await api('api/settings', b); brand(SET); toast('انحفظ ✓'); renderSet() } catch { toast('تعذّر الحفظ'); sv.disabled = false } };
+}
+let LOCKED = null; const store_locked = () => LOCKED;
+boot();

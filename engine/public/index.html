@@ -1,0 +1,44 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>موظف واتساب</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="app.css"></head><body>
+<a class="skip" href="#main">تخطَّ إلى المحتوى</a>
+<div id="auth" class="auth" hidden><form class="auth-card" id="authForm"><div class="logo-lg" id="authLogo"></div><h1>أهلاً بعودتك</h1><p class="muted">البرنامج مقفل بكلمة مرور.</p>
+<label for="pw" class="lbl">كلمة المرور</label><input id="pw" type="password" autocomplete="current-password" required>
+<p id="authErr" class="err" role="alert"></p><button class="btn primary block" type="submit">دخول</button></form></div>
+<div id="app" hidden>
+<header class="topbar">
+ <div class="brand"><div class="logo" id="logo"></div><div class="brand-t"><b id="shopName">محل الورد</b><small>موظف واتساب</small></div></div>
+ <nav class="tabs" id="nav" aria-label="الأقسام"></nav>
+ <div class="top-act">
+  <button class="pill" id="empPill" data-tour="emp"><span class="dot"></span><span id="empTxt">الموظف مطفي</span></button>
+  <span class="pill conn" id="conn" role="status"><span class="dot"></span><span id="connTxt">يبدأ</span></span>
+  <button class="icon-btn" id="bell" aria-label="التنبيهات" data-tour="bell"><svg><use href="#i-bell"/></svg><span class="badge" id="bellDot" hidden></span></button>
+  <button class="icon-btn" id="help" aria-label="المساعدة والشرح" data-tour="help"><svg><use href="#i-help"/></svg></button>
+ </div>
+</header>
+<div id="alertsPop" class="pop" hidden role="dialog" aria-label="التنبيهات"></div>
+<div id="helpPop" class="pop pop-help" hidden role="dialog" aria-label="المساعدة"></div>
+<div id="syncBar" class="syncbar" hidden role="status"></div>
+<main id="main" tabindex="-1">
+ <div id="hint" class="hint" hidden></div>
+ <section id="p-home" class="page"></section><section id="p-chats" class="page" hidden></section><section id="p-sales" class="page" hidden></section>
+ <section id="p-mkt" class="page" hidden></section><section id="p-emp" class="page" hidden></section><section id="p-set" class="page" hidden></section>
+</main></div>
+<div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mTitle"><h3 id="mTitle"></h3><div id="mBody"></div><div class="modal-act"><button class="btn primary" id="mOk"></button><button class="btn" id="mNo">إلغاء</button></div></div></div>
+<div id="tour" class="tour" hidden><div class="tour-hole" id="tourHole"></div><div class="tour-card" role="dialog" aria-modal="true" aria-labelledby="tourT"><small id="tourN" class="muted"></small><h3 id="tourT"></h3><p id="tourB"></p>
+ <div class="modal-act"><button class="btn primary" id="tourNext">التالي</button><button class="btn" id="tourPrev">السابق</button><button class="btn ghost" id="tourSkip">تخطَّ الجولة</button></div></div></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.7M12 17h.01" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M3 3l18 8-18 8 3-8z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" transform="scale(-1,1) translate(-24,0)"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 3c1 4 6 6 6 11a6 6 0 0 1-12 0c0-3 2-4 2-7 2 1 3 3 3 5 1-2 1-5 1-9z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+<symbol id="i-box" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 4v4M9 13h.01M15 13h.01M9 17h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M4 21a8 8 0 0 1 16 0" fill="none" stroke="currentColor" stroke-width="1.9"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+</defs></svg>
+<script src="app.js"></script></body></html>

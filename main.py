@@ -14,7 +14,7 @@ from app import config
 def ensure_venv():
     """If launched with another Python (e.g. double-clicking main.py with the system Python),
     re-launch with the app's own .venv interpreter so all packages are present."""
-    if os.environ.get("WAE_NO_REEXEC") or "--smoke" in sys.argv or getattr(sys, "frozen", False):
+    if os.environ.get("WAE_NO_REEXEC") or "--smoke" in sys.argv or any(a.startswith("--persist-test") for a in sys.argv) or getattr(sys, "frozen", False):
         return
     venv = config.BASE_DIR / ".venv"
     exe_dir = venv / ("Scripts" if os.name == "nt" else "bin")
@@ -45,31 +45,26 @@ def startup_log(msg):
     try: print(msg, flush=True)
     except Exception: pass
 
-def build(db_path=None):
-    from app.db.database import Database
-    from app.db.repository import Repository
-    from app.core.service import EmployeeService
-    return EmployeeService(Repository(Database(db_path)))
-
 def smoke():
+    """Self-test of the packaged app: brain + Node engine in simulator mode, full scenario, restart, persistence."""
     import tempfile
-    svc = build(os.path.join(tempfile.mkdtemp(), "smoke.db"))
-    svc.repo.add_business_info("منتج", "باقة التصميم", "تصميم شعار وهوية", "500 ريال")
-    r = svc.analyze_text("أحمد: السلام عليكم\nأحمد: كم سعر باقة التصميم؟\nأنا: هلا")
-    assert r["classification"] in ("Interested", "Hot Lead"), r
-    from app.web.api import Api
-    from app.web.server import UIServer
-    import json, urllib.request
-    srv = UIServer(Api(svc)); url = srv.start()
-    html = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
-    assert "موظف واتساب" in html and srv.token in html
-    req = urllib.request.Request(url.split("?")[0] + "api/overview", data=b"{}", headers={"X-Token": srv.token, "Content-Type": "application/json"})
-    assert json.loads(urllib.request.urlopen(req, timeout=5).read())["ok"]
-    srv.stop()
+    from app.launcher import Engine
+    from app import e2e
     from app.brain import think
     b = think("ابي اطلب ٢ بوكيه توليب بكره حي الفيصلية الدمام")
     assert b["kind"] == "order_confirm" and b["total"] == 440, b
-    msg = f"SMOKE OK v{config.APP_VERSION}: {r['classification']} | brain={b['kind']} total={b['total']}"
+    d = tempfile.mkdtemp(prefix="wae-smoke-"); lines = []
+    eng = Engine(d, fake=True)
+    try:
+        eng.start(); e2e.scenario(eng.url, log=lines.append)
+    finally:
+        eng.stop()
+    eng = Engine(d, fake=True)
+    try:
+        eng.start(); e2e.verify_persisted(eng.url, log=lines.append)
+    finally:
+        eng.stop()
+    msg = f"SMOKE OK v{config.APP_VERSION}: brain={b['kind']} total={b['total']}\n" + "\n".join(lines)
     try:
         config.LOG_DIR.mkdir(parents=True, exist_ok=True); (config.LOG_DIR / "smoke.txt").write_text(msg, encoding="utf-8")
     except Exception: pass
@@ -77,55 +72,52 @@ def smoke():
     except Exception: pass
     return 0
 
+def single_instance(data_dir):
+    """If the app is already running, return its URL (we just open another window on it)."""
+    import json, urllib.request
+    lock = data_dir / "running.json"
+    try:
+        info = json.loads(lock.read_text(encoding="utf-8"))
+        with urllib.request.urlopen(info["url"] + "healthz", timeout=2) as r:
+            if json.loads(r.read()).get("ok"): return info["url"], lock
+    except Exception: pass
+    return None, lock
+
 def run_app(force_browser=False):
-    from app.core.logger import log_activity
-    from app.web.api import Api
-    from app.web.server import UIServer
-    from app.automation.runner import EmployeeRunner
-    svc = build()
-    log_activity(svc.repo.db, "app_start")
-    runner = EmployeeRunner(svc.repo)
-    import threading, time as _t
-    def housekeeping():   # daily backup + data retention, all local
-        from app.core import pro
-        from app.core.settings import AutoReplySettings
-        while True:
-            try:
-                st = AutoReplySettings.load(svc.repo)
-                if st.backup_daily: pro.backup_if_due(svc.repo.db, svc.repo)
-                pro.apply_retention(svc.repo, st.retention_days)
-            except Exception:
-                traceback.print_exc()
-            _t.sleep(3600)
-    threading.Thread(target=housekeeping, daemon=True, name="housekeeping").start()
-    srv = UIServer(Api(svc, runner)); url = srv.start()
-    startup_log(f"UI server at {srv.base} (token not logged)")
-    (config.DATA_DIR / "first_run_ok").write_text("ok", encoding="utf-8")
+    import json
+    from app.launcher import Engine, user_data_dir
+    data_dir = user_data_dir(); data_dir.mkdir(parents=True, exist_ok=True)
+    url, lock = single_instance(data_dir); eng = None
+    if not url:
+        eng = Engine(data_dir); url = eng.start()
+        lock.write_text(json.dumps({"url": url}), encoding="utf-8")
+        startup_log(f"engine started, data in {data_dir} (token not logged)")
     def shutdown():
-        try:
-            runner.shutdown(); svc.repo.db.backup("on-exit"); log_activity(svc.repo.db, "app_close")
-        except Exception:
-            traceback.print_exc()
+        if eng:
+            try: eng.stop()
+            except Exception: traceback.print_exc()
+            try: lock.unlink()
+            except Exception: pass
     try:
         if force_browser:
             raise RuntimeError("browser mode requested")
         import webview  # pywebview -> Edge WebView2 on Windows 10/11
-        win = webview.create_window(f"{config.APP_NAME} {config.APP_VERSION}", url, width=1360, height=860, min_size=(1000, 650),
-                                    background_color="#F6F7F4", text_select=True)
+        win = webview.create_window(f"{config.APP_NAME} {config.APP_VERSION}", url, width=1440, height=900, min_size=(1100, 680),
+                                    background_color="#FFFFFF", text_select=True)
         start_tray(win, shutdown)
-        webview.start()
+        webview.start(private_mode=False, storage_path=str(data_dir / "webview"))
         startup_log("window closed")
     except Exception as e:
         startup_log(f"native window unavailable ({e}); opening default browser")
         import webbrowser, time
         webbrowser.open(url)
-        print("\n  الواجهة مفتوحة في المتصفح:", url, "\n  اقفل هالنافذة لإيقاف البرنامج (Ctrl+C).", flush=True)
+        print("\n  الواجهة مفتوحة في المتصفح.\n  اقفل هالنافذة لإيقاف البرنامج (Ctrl+C).", flush=True)
         try:
             while True: time.sleep(1)
         except KeyboardInterrupt:
             pass
     finally:
-        shutdown(); srv.stop()
+        shutdown()
 
 def start_tray(win, on_quit):
     """Optional system-tray icon (pystray). Silently skipped if pystray/Pillow are missing."""
@@ -152,7 +144,27 @@ def start_tray(win, on_quit):
         startup_log(f"tray unavailable: {e}")
         return None
 
+def persist_test(mode):
+    """CI check that user data survives close/reopen and installer upgrade/uninstall. Uses the real user data folder."""
+    from app.launcher import Engine, user_data_dir
+    from app import e2e
+    eng = Engine(user_data_dir(), fake=True); eng.start()
+    try:
+        if mode == "write": e2e.scenario(eng.url, log=print)
+        else: e2e.verify_persisted(eng.url, log=print)
+    finally: eng.stop()
+    msg = f"PERSIST {mode.upper()} OK in {user_data_dir()}"
+    print(msg, flush=True)
+    try: config.LOG_DIR.mkdir(parents=True, exist_ok=True); (config.LOG_DIR / f"persist-{mode}.txt").write_text(msg, encoding="utf-8")
+    except Exception: pass
+    return 0
+
 def main():
+    for mode in ("write", "check"):
+        if f"--persist-test={mode}" in sys.argv:
+            try: return persist_test(mode)
+            except Exception:
+                startup_log("PERSIST TEST FAILED:\n" + traceback.format_exc()); traceback.print_exc(); return 1
     if "--smoke" in sys.argv:
         try:
             return smoke()

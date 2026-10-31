@@ -23,7 +23,7 @@ background:linear-gradient(170deg,#128a4f 0%,#0b5a34 100%);color:#fff;position:r
 .s{{position:absolute;top:{186*s}px;width:100%;text-align:center;font-size:{12.5*s}px;opacity:.85;line-height:1.5}}
 .p{{position:absolute;bottom:-{30*s}px;left:-{30*s}px;width:{130*s}px;height:{130*s}px;border-radius:50%;background:rgba(255,255,255,.07)}}
 .v{{position:absolute;bottom:{12*s}px;width:100%;text-align:center;font-size:{10*s}px;opacity:.6}}</style></head>
-<body><div class="p"></div><div class="i">{ICON}</div><div class="t">موظف واتساب</div><div class="s">يرتب طلبات محلك<br>ويجهز ردودك</div><div class="v">v2.0.1</div></body></html>'''
+<body><div class="p"></div><div class="i">{ICON}</div><div class="t">موظف واتساب</div><div class="s">يرتب طلبات محلك<br>ويجهز ردودك</div><div class="v">v2.1.0</div></body></html>'''
 def small(w, h):
     return f'<html><body style="margin:0;width:{w}px;height:{h}px;background:#fff;display:grid;place-items:center"><div style="width:{int(w*.86)}px;height:{int(w*.86)}px">{ICON}</div></body></html>'
 with sync_playwright() as p:

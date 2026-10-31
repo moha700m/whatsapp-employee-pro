@@ -1,7 +1,7 @@
 ; «موظف واتساب» — Inno Setup 6 script (Arabic-first, per-user, no admin).
 ; Build: ISCC packaging\installer.iss   (after PyInstaller → dist\WhatsAppEmployee)
 #define AppName "موظف واتساب"
-#define AppVer "2.0.1"
+#define AppVer "2.1.0"
 #define AppExe "WhatsAppEmployee.exe"
 #define Publisher "Mohammed (moha700m)"
 #define AppUrl "https://github.com/moha700m/whatsapp-employee-pro"
@@ -33,7 +33,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 CloseApplications=force
-CloseApplicationsFilter={#AppExe}
+CloseApplicationsFilter={#AppExe},node.exe
 RestartApplications=no
 OutputDir=..\dist
 OutputBaseFilename=WhatsAppEmployee-Setup-{#AppVer}
@@ -133,6 +133,9 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     if (not UninstallSilent) and (MsgBox(CustomMessage('KeepData'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
+    begin
       DelTree(ExpandConstant('{app}'), True, True, True);
+      DelTree(ExpandConstant('{localappdata}\WhatsAppEmployee'), True, True, True);
+    end;
   end;
 end;

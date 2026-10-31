@@ -1,0 +1,19 @@
+{
+ "name": "whatsapp-employee-engine",
+ "type": "module",
+ "private": true,
+ "scripts": {
+  "start": "node server.js",
+  "test": "node --test test/employee.test.mjs"
+ },
+ "dependencies": {
+  "@whiskeysockets/baileys": "^6.7.24",
+  "express": "^5.3.0",
+  "pino": "^10.4.0",
+  "qrcode": "^1.5.4"
+ },
+ "engines": {
+  "node": ">=20"
+ },
+ "version": "2.1.0"
+}

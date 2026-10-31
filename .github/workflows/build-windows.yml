@@ -11,6 +11,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with: { python-version: "3.12", cache: pip }
+      - uses: actions/setup-node@v5
+        with: { node-version: "22" }
+      - name: Engine deps + engine unit tests
+        working-directory: engine
+        run: |
+          npm ci --omit=dev --no-audit --no-fund
+          npm test
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -20,6 +27,15 @@ jobs:
         run: python -m pytest -q
       - name: Build exe (PyInstaller one-folder)
         run: pyinstaller packaging\whatsapp_employee.spec --noconfirm --distpath dist --workpath build
+      - name: Bundle Node runtime + engine
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\WhatsAppEmployee\node | Out-Null
+          Copy-Item (Get-Command node).Source dist\WhatsAppEmployee\node\node.exe
+          robocopy engine dist\WhatsAppEmployee\engine /E /XD test data /XF *.log | Out-Null
+          if (-not (Test-Path dist\WhatsAppEmployee\engine\node_modules\@whiskeysockets\baileys)) { throw "baileys missing" }
+          if (-not (Test-Path dist\WhatsAppEmployee\engine\public\fonts\Cairo.ttf)) { throw "font missing" }
+          exit 0
       - name: Smoke test built exe
         shell: pwsh
         run: |
@@ -34,27 +50,37 @@ jobs:
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
-      - name: Installer silent install/uninstall test
+      - name: Installer install / persistence / upgrade / uninstall test
         shell: pwsh
         run: |
           $s = Get-ChildItem dist\WhatsAppEmployee-Setup-*.exe | Select-Object -First 1
+          $app = "$env:LOCALAPPDATA\Programs\WhatsAppEmployee"; $exe = "$app\WhatsAppEmployee.exe"; $data = "$env:LOCALAPPDATA\WhatsAppEmployee"
           $p = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=install.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content install.log; throw "install failed" }
-          $exe = "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\WhatsAppEmployee.exe"
           if (-not (Test-Path $exe)) { throw "exe not installed" }
           $q = Start-Process $exe -ArgumentList "--smoke" -Wait -PassThru
-          Get-Content "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\data\logs\smoke.txt"
-          if ($q.ExitCode -ne 0) { throw "installed smoke failed" }
+          Get-Content "$app\data\logs\smoke.txt"
+          if ($q.ExitCode -ne 0) { Get-Content "$app\data\logs\startup.log" -ErrorAction SilentlyContinue; throw "installed smoke failed" }
+          $w = Start-Process $exe -ArgumentList "--persist-test=write" -Wait -PassThru
+          if ($w.ExitCode -ne 0) { Get-Content "$app\data\logs\startup.log" -ErrorAction SilentlyContinue; throw "persist write failed" }
+          if (-not (Test-Path "$data\wa\store.json")) { throw "user data not in LOCALAPPDATA\WhatsAppEmployee" }
+          $c = Start-Process $exe -ArgumentList "--persist-test=check" -Wait -PassThru
+          if ($c.ExitCode -ne 0) { throw "close/reopen lost data" }
           $p2 = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
           if ($p2.ExitCode -ne 0) { throw "upgrade-in-place failed" }
-          $u = Start-Process "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          $c2 = Start-Process $exe -ArgumentList "--persist-test=check" -Wait -PassThru
+          if ($c2.ExitCode -ne 0) { throw "upgrade lost data" }
+          $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
           Start-Sleep 3
           if (Test-Path $exe) { throw "uninstall left exe" }
-          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\data")) { throw "data not kept" }
-          "install/upgrade/uninstall OK (data kept)"
+          if (-not (Test-Path "$data\wa\store.json")) { throw "uninstall deleted user data" }
+          $p3 = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          $c3 = Start-Process $exe -ArgumentList "--persist-test=check" -Wait -PassThru
+          if ($c3.ExitCode -ne 0) { throw "reinstall lost data" }
+          "install / close-reopen / upgrade / uninstall / reinstall: data kept"
       - name: Zip portable app
         shell: pwsh
-        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.0.1.zip
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.1.0.zip
       - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
       - uses: actions/upload-artifact@v7
