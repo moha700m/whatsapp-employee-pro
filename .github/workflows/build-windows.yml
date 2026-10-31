@@ -1,0 +1,42 @@
+name: build-windows
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env: { PYTHONUTF8: "1" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+          python -m playwright install chromium
+      - name: Tests
+        run: python -m pytest -q
+      - name: Build exe (PyInstaller one-folder)
+        run: pyinstaller packaging\whatsapp_employee.spec --noconfirm --distpath dist --workpath build
+      - name: Smoke test built exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\WhatsAppEmployee\WhatsAppEmployee.exe -ArgumentList "--smoke" -Wait -PassThru
+          Get-Content dist\WhatsAppEmployee\data\logs\smoke.txt -ErrorAction SilentlyContinue
+          Get-Content dist\WhatsAppEmployee\data\logs\startup.log -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "smoke failed: $($p.ExitCode)" }
+          Remove-Item -Recurse -Force dist\WhatsAppEmployee\data -ErrorAction SilentlyContinue
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+      - name: Zip portable app
+        shell: pwsh
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.0.0.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
+      - uses: actions/upload-artifact@v4
+        with: { name: WhatsAppEmployee-portable, path: dist/WhatsAppEmployee-portable-*.zip }

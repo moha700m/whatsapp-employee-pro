@@ -1,0 +1,17 @@
+<html><body>
+<div id="pane-side"><div role="grid">
+ <div role="listitem" onclick="openChat('أحمد')"><span dir="auto" title="أحمد">أحمد</span><span aria-label="2 unread messages">2</span></div>
+ <div role="listitem" onclick="openChat('قروب')"><span data-icon="default-group"></span><span dir="auto" title="قروب">قروب</span><span aria-label="1 unread message">1</span></div>
+ <div role="listitem" onclick="openChat('سارة')"><span dir="auto" title="سارة">سارة</span></div>
+</div></div>
+<div id="main"></div>
+<script>
+function openChat(n){
+  document.getElementById('main').innerHTML =
+   '<header><span dir="auto" title="'+n+'">'+n+'</span></header>'+
+   '<div data-id="false_1@c.us_A1" class="message-in"><div class="copyable-text" data-pre-plain-text="[9:15 PM, 10/31/2026] '+n+': "><span class="selectable-text"><span>هلا</span></span></div></div>'+
+   '<div data-id="false_1@c.us_A2" class="message-in"><div class="copyable-text" data-pre-plain-text="[9:16 PM, 10/31/2026] '+n+': "><span class="selectable-text"><span>كم السعر؟</span></span></div></div>'+
+   '<footer><div contenteditable="true" role="textbox" id="box"></div><button aria-label="Send" onclick="sendIt()">></button></footer>';
+}
+function sendIt(){ var b=document.getElementById('box'); window.lastSent=b.innerText; b.innerText=''; }
+</script></body></html>

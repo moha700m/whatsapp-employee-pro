@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ar" dir="rtl" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>موظف واتساب</title>
+<link rel="stylesheet" href="app.css">
+<script>window.API_TOKEN="__TOKEN__";</script>
+</head>
+<body>
+<div id="splash"><div class="sp-logo">🌷</div><b>موظف واتساب</b><span>لحظة، قاعد أجهز كل شي…</span><i></i></div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo" id="logo"></span><div><b>موظف واتساب</b><small id="ver"></small></div></div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <button class="btn kill" id="killBtn" title="يوقف كل شي فوراً"></button>
+      <button class="btn ghost small" id="themeBtn"></button>
+    </div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div class="chips">
+        <div class="chip" id="chipWa"><i></i><span class="lbl">واتساب</span><b>—</b></div>
+        <div class="chip hide-simple" id="chipGpt"><i></i><span class="lbl">ChatGPT</span><b>—</b></div>
+        <div class="chip" id="chipEmp"><i></i><span class="lbl">الموظف</span><b>—</b></div>
+        <div class="chip plain hide-simple"><span class="lbl">آخر فحص</span><b id="lastCheck">—</b></div>
+      </div>
+      <div class="top-actions">
+        <button class="btn outline" id="openWa"></button>
+        <button class="btn primary" id="startBtn"></button>
+        <button class="btn danger-outline" id="stopBtn"></button>
+      </div>
+    </header>
+    <div id="banner"></div>
+    <section id="page" class="page"></section>
+  </main>
+</div>
+<div id="modal" class="modal hidden"><div class="modal-card"><div class="modal-head"><h3 id="modalTitle"></h3><button class="icon-btn" id="modalClose">✕</button></div><div id="modalBody"></div></div></div>
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

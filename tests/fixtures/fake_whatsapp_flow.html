@@ -1,0 +1,17 @@
+<html><body>
+<div id="landing"><canvas aria-label="Scan this QR code to link a device!" width="200" height="200"></canvas></div>
+<script>
+function login(){
+  document.getElementById('landing').remove();
+  document.body.insertAdjacentHTML('afterbegin',
+   '<div id="pane-side"><div role="grid"><div role="listitem" onclick="openChat()"><span dir="auto" title="أحمد">أحمد</span><span aria-label="1 unread message">1</span></div></div></div><div id="main"></div>');
+}
+function openChat(){
+  document.getElementById('main').innerHTML =
+   '<header><span dir="auto" title="أحمد">أحمد</span></header>'+
+   '<div data-id="false_9665@c.us_X1"><div class="copyable-text" data-pre-plain-text="[9:16 PM, 10/31/2026] أحمد: "><span class="selectable-text"><span>كم سعر باقة التصميم؟</span></span></div></div>'+
+   '<footer><div contenteditable="true" role="textbox" id="box"></div><button aria-label="Send" onclick="sendIt()">></button></footer>';
+}
+function sendIt(){ var b=document.getElementById('box'); window.lastSent=b.innerText; b.innerText='';
+  var badge=document.querySelector('[aria-label*=unread]'); if(badge) badge.remove(); }
+</script></body></html>

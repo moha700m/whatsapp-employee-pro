@@ -1,0 +1,15 @@
+<html><body style="margin:0;font-family:sans-serif">
+<div id="landing"><div data-ref="2@abc" style="width:264px;height:264px;padding:8px;background:#fff">
+<canvas aria-label="Scan this QR code to link a device!" width="264" height="264"></canvas></div></div>
+<script>
+var gen=0;
+function drawQR(){ var c=document.querySelector('canvas'); if(!c) return; var x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,264,264);
+  var seed=++gen*9301; for(var i=0;i<33;i++)for(var j=0;j<33;j++){ seed=(seed*9301+49297)%233280; if(seed/233280>0.5){x.fillStyle='#111';x.fillRect(i*8,j*8,8,8);} }
+  [[0,0],[200,0],[0,200]].forEach(function(p){x.fillStyle='#111';x.fillRect(p[0],p[1],64,64);x.fillStyle='#fff';x.fillRect(p[0]+8,p[1]+8,48,48);x.fillStyle='#111';x.fillRect(p[0]+16,p[1]+16,32,32);}); }
+drawQR(); var rot=setInterval(drawQR,2000);
+function login(){ clearInterval(rot); var l=document.getElementById('landing'); if(l) l.remove();
+  document.body.insertAdjacentHTML('afterbegin','<div id="pane-side"><header><img draggable="false" alt="متجر ليان"></header><div role="grid"><div role="listitem"><span dir="auto" title="أحمد">أحمد</span><span aria-label="1 unread message">1</span></div></div></div><div id="main"></div>'); }
+function phoneOffline(){ document.body.insertAdjacentHTML('beforeend','<div data-testid="alert-phone">Phone not connected</div>'); }
+function conflict(){ document.body.innerHTML='<div>WhatsApp is open in another window. Click "Use here" to use WhatsApp in this window.</div><button onclick="document.body.innerHTML=\'\';login()">Use here</button>'; }
+var m=location.hash.match(/autologin=(\d+)/); if(m) setTimeout(login, +m[1]);
+</script></body></html>

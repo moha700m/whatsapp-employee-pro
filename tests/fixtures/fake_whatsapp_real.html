@@ -1,0 +1,19 @@
+<html dir="rtl"><body>
+<div id="pane-side"><div aria-label="قائمة الدردشات" role="grid">
+ <div role="listitem" data-n="Sara"><div role="gridcell"><span dir="auto" title="Sara Test 🌸">Sara Test 🌸</span></div><div><span dir="ltr" title="السلام عليكم كم سعر الباقة؟">السلام عليكم كم سعر الباقة؟</span><span aria-label="1 رسالة غير مقروءة">1</span></div></div>
+ <div role="listitem" data-n="Brother"><div role="gridcell"><span dir="auto" title="Customer 2">Customer 2</span></div><div><span dir="ltr" title="هلا">هلا</span><span aria-label="2 unread messages">2</span></div></div>
+ <div role="listitem" data-n="Phone"><div role="gridcell"><span dir="auto" title="&#x200e;+966 50 000 0123&#x200e;">&#x200e;+966 50 000 0123&#x200e;</span></div><div><span dir="ltr" title="ابي اطلب">ابي اطلب</span><span aria-label="رسالة غير مقروءة واحدة">1</span></div></div>
+</div></div>
+<div id="main"></div>
+<script>
+var HEAD={Sara:'Sara Test', Brother:'أخوي', Phone:'+966 50 000 0123'};
+var MSG={Sara:'السلام عليكم كم سعر الباقة؟', Brother:'هلا', Phone:'ابي اطلب'};
+document.querySelectorAll('[role=listitem]').forEach(function(r){ r.onclick=function(){
+  var n=r.dataset.n; document.querySelectorAll('[role=listitem]').forEach(function(x){x.removeAttribute('aria-selected')}); r.setAttribute('aria-selected','true');
+  document.getElementById('main').innerHTML='<header><div role="button"><span dir="auto">'+HEAD[n]+'</span></div></header>'+
+   '<div class="message-in focusable-list-item" data-id="false_'+n+'@c.us_ID1"><div class="copyable-text" data-pre-plain-text="[9:15 م، 31/10/2026] '+HEAD[n]+': "><span class="selectable-text copyable-text"><span>'+MSG[n]+'</span></span></div></div>'+
+   '<footer><div contenteditable="true" role="textbox" data-tab="10" aria-label="اكتب رسالة" id="box"></div><button aria-label="إرسال" onclick="send()"><span data-icon="wds-ic-send-filled"></span></button></footer>';
+  var b=r.querySelector('[aria-label*="غير مقروء"],[aria-label*="unread"]'); if(b) b.remove();
+}});
+window.sent=[]; function send(){ var b=document.getElementById('box'); window.sent.push(b.innerText); b.innerText=''; }
+</script></body></html>
