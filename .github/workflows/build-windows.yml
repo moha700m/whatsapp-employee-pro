@@ -8,8 +8,8 @@ jobs:
     timeout-minutes: 45
     env: { PYTHONUTF8: "1" }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12", cache: pip }
       - name: Install deps
         run: |
@@ -33,10 +33,29 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+      - name: Installer silent install/uninstall test
+        shell: pwsh
+        run: |
+          $s = Get-ChildItem dist\WhatsAppEmployee-Setup-*.exe | Select-Object -First 1
+          $p = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log; throw "install failed" }
+          $exe = "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\WhatsAppEmployee.exe"
+          if (-not (Test-Path $exe)) { throw "exe not installed" }
+          $q = Start-Process $exe -ArgumentList "--smoke" -Wait -PassThru
+          Get-Content "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\data\logs\smoke.txt"
+          if ($q.ExitCode -ne 0) { throw "installed smoke failed" }
+          $p2 = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($p2.ExitCode -ne 0) { throw "upgrade-in-place failed" }
+          $u = Start-Process "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          Start-Sleep 3
+          if (Test-Path $exe) { throw "uninstall left exe" }
+          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\WhatsAppEmployee\data")) { throw "data not kept" }
+          "install/upgrade/uninstall OK (data kept)"
       - name: Zip portable app
         shell: pwsh
-        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.0.0.zip
-      - uses: actions/upload-artifact@v4
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.0.1.zip
+      - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-portable, path: dist/WhatsAppEmployee-portable-*.zip }
