@@ -65,6 +65,11 @@ def main():
             cl.req("api/crm", {"jid": J(1), "data": {"tag": "مهتم"}}); cl.req("api/crm", {"jid": J(0), "data": {"tag": "مهتم"}})
             cl.req("api/ai/score-all", {}); cl.req("api/ai/briefing", {})
             cl.req("api/settings", {"shopName": "ورد الريحان", "city": "الرياض", "tourDone": True, "autoReply": {"enabled": True, "schedule": "always", "delaySec": 0}})
+            import base64; MD = Path(__file__).resolve().parent.parent / "tests" / "media"
+            for kind, fn, body in [("image", "rose.jpg", {"mimetype": "image/jpeg", "caption": "ابي بوكيه مثل هذا"}), ("audio", "voice.ogg", {"mimetype": "audio/ogg; codecs=opus", "seconds": 6, "ptt": True}),
+                                   ("video", "video.mp4", {"mimetype": "video/mp4", "seconds": 3}), ("sticker", "sticker.webp", {"mimetype": "image/webp"}),
+                                   ("document", "price-list.pdf", {"mimetype": "application/pdf", "fileName": "قائمة-المناسبة.pdf", "fileLength": 193})]:
+                cl.req("api/sim/media", {"jid": J(3), "kind": kind, "body": {**body, "fakeData": base64.b64encode((MD / fn).read_bytes()).decode()}})
             cl.req("api/sim/incoming", {"jid": J(11), "text": "متى تفتحون اليوم؟", "name": "تركي"}); cl.req("api/sim/incoming", {"jid": J(9), "text": "ابي اطلب ستاند تهنئة", "name": "فيصل"})
             time.sleep(1.5); cl.req("api/settings", {"autoReply": {"enabled": False}})
             for theme, (tag0, w, h, dsf) in [(t, z) for t in ("light", "dark") for z in SIZES]:
@@ -84,6 +89,9 @@ def main():
                 pg.click("[data-p=chats]"); pg.wait_for_selector(".ci"); pg.click("#cf [data-f=wait]"); pg.wait_for_timeout(300); shot(pg, "06b_chats_waiting_badges", tag); pg.click("#cf [data-f=all]")
                 pg.click(".ci[data-j='966551230001@s.whatsapp.net']"); pg.wait_for_selector(".pf-r"); pg.wait_for_timeout(300); shot(pg, "06c_chat_profile_lid_resolved", tag)
                 pg.click(".ci[data-j='63308489647951@lid']"); pg.wait_for_selector(".m"); pg.wait_for_timeout(300); shot(pg, "06d_chat_hidden_number", tag)
+                pg.click(f".ci[data-j='{J(3)}']"); pg.wait_for_selector(".mau"); pg.wait_for_timeout(900); pg.eval_on_selector("#ms", "e => e.scrollTop = e.scrollHeight"); pg.wait_for_timeout(300); shot(pg, "06e_chat_media", tag)
+                pg.click(".mspd"); pg.click(".mplay"); pg.wait_for_timeout(1200); shot(pg, "06f_voice_playing_1_5x", tag); pg.click(".mplay")
+                pg.click(".mimg"); pg.wait_for_selector("#lightbox[open]"); pg.wait_for_timeout(300); shot(pg, "06g_image_lightbox", tag); pg.keyboard.press("Escape")
                 for k in ["shop", "prices", "tpl", "brain", "rules", "brand", "sec", "log", "wa", "about"]:
                     pg.click("[data-p=set]"); pg.click(f".setnav [data-t={k}]"); pg.wait_for_timeout(250); shot(pg, f"17_settings_{k}", tag)
                 pg.click("[data-p=set]"); pg.click(".setnav [data-t=wa]"); pg.click("#w1"); pg.wait_for_selector("#modal:not([hidden])"); shot(pg, "17z_disconnect_dialog", tag); pg.click("#mNo")

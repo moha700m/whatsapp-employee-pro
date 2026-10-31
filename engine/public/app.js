@@ -15,9 +15,9 @@ const hm12 = s => { const [h, m] = String(s || '').split(':').map(Number); if (i
 const ini = n => esc((n || '؟').replace(/^\+/, '').trim().charAt(0) || '؟');
 const num = n => (+n || 0).toLocaleString('ar-SA');
 const money = n => num(n) + ' ر.س';
-const who = c => c.label || c.name || c.disp || 'رقم مخفي';
+const who = c => c.label || c.name || c.disp || 'عميل';
 // phone shown left-to-right inside Arabic text (no flipped + or digits); hidden numbers say so instead of a raw id
-const PN = c => c.disp ? `<bdi dir="ltr" class="pn">${esc(c.disp)}</bdi>` : '<span class="muted">رقم مخفي</span>';
+const PN = c => c.disp ? `<bdi dir="ltr" class="pn">${esc(c.disp)}</bdi>` : (c.hid ? `<span class="muted">الرقم ما وصل بعد · #${esc(c.hid)}</span>` : '<span class="muted">—</span>');
 const B = t => `<bdi>${esc(t)}</bdi>`;
 const waitTxt = ms => { const m = Math.round(ms / 6e4); return m < 60 ? num(Math.max(1, m)) + ' د' : m < 1440 ? num(Math.round(m / 60)) + ' س' : num(Math.round(m / 1440)) + ' يوم' };
 const STB = c => (c.state === 'wait' ? `<span class="chip w">ينتظر ردك · ${waitTxt(c.waitMs)}</span>` : c.state === 'new' ? '<span class="chip b">جديد</span>' : c.state === 'replied' ? '<span class="chip g">رديت</span>' : '') + (c.openOrders ? '<span class="chip r">عنده طلب</span>' : '');
@@ -30,6 +30,40 @@ function brandText() { const r = document.documentElement, c = (r.style.getPrope
   if (r.dataset.theme !== 'dark') return r.style.setProperty('--brand-t', c); const n = parseInt(c.slice(1), 16), mix = v => Math.round(v + (255 - v) * .62);
   r.style.setProperty('--brand-t', '#' + [n >> 16, (n >> 8) & 255, n & 255].map(mix).map(v => v.toString(16).padStart(2, '0')).join('')) }
 MQ.addEventListener?.('change', () => applyTheme());
+// ---- customer media: thumbnails, lightbox, video, voice notes with speed, stickers, documents ----
+const MURL = id => 'api/media?id=' + encodeURIComponent(id);
+const dur = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') };
+const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' م.ب' : Math.max(1, Math.round(n / 1024)) + ' ك.ب';
+function MEDIA(m) {
+  const x = m.media, u = MURL(m.id), th = x.thumb ? `data:image/jpeg;base64,${x.thumb}` : '';
+  if (x.type === 'image') return `<button class="mimg" data-full="${u}" aria-label="افتح الصورة بالحجم الكامل"><img src="${u}" alt="صورة من العميل" loading="lazy"></button>`;
+  if (x.type === 'sticker') return `<img class="mstk" src="${u}" alt="ملصق" loading="lazy">`;
+  if (x.type === 'video') return `<video class="mvid" controls preload="none" playsinline ${th ? `poster="${th}"` : ''} src="${u}" aria-label="فيديو من العميل"></video>${x.secs ? `<small class="muted">فيديو · ${dur(x.secs)}</small>` : ''}`;
+  if (x.type === 'audio') return `<div class="mau" data-src="${u}"><button class="mplay" aria-label="شغّل الرسالة الصوتية"><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+    <div class="mbar" role="slider" aria-label="موضع التشغيل" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><i></i></div>
+    <span class="mtime">${dur(x.secs)}</span><button class="mspd" aria-label="سرعة التشغيل">1×</button><span class="mlbl">${x.ptt ? 'رسالة صوتية' : 'مقطع صوتي'}</span></div>`;
+  if (x.type === 'document') return `<div class="mdoc"><svg aria-hidden="true"><use href="#i-file"/></svg><div class="grow"><b class="ell">${esc((x.name || 'ملف').replace(/\.[a-z0-9]{1,6}$/i, ''))}</b><small class="muted">${x.mime === 'application/pdf' ? 'مستند' : 'ملف'}${x.size ? ' · ' + kb(x.size) : ''}</small></div>
+    <a class="btn" href="${u}" target="_blank" rel="noopener">افتح</a><a class="btn ghost" href="${u}&dl=1" download>نزّل</a></div>`;
+  return '';
+}
+document.addEventListener('error', e => { const t = e.target; if (t?.matches?.('.mimg img, .mstk, .mvid') && !t._err) { t._err = 1; mediaErr(t) } }, true);
+const mediaErr = el => { const d = document.createElement('div'); d.className = 'merr'; d.innerHTML = 'ما قدرنا نفتح الملف. تأكد إن الجوال متصل <button class="btn ghost">جرّب مرة ثانية</button>';
+  d.querySelector('button').onclick = () => { const n = el.cloneNode(); n.src = el.src.split('&r=')[0] + '&r=' + Date.now(); d.replaceWith(n) }; (el.closest('.mimg') || el).replaceWith(d) };
+let AU = null;
+document.addEventListener('click', e => {
+  const im = e.target.closest('.mimg'); if (im) { const dl = document.getElementById('lightbox'); dl.querySelector('img').src = im.dataset.full; dl.querySelector('a').href = im.dataset.full + '&dl=1'; dl.showModal(); return }
+  if (e.target.closest('#lightbox') && !e.target.closest('a')) { document.getElementById('lightbox').close(); return }
+  const box = e.target.closest('.mau'); if (!box) return; const a = box._a ??= (() => { const a = new Audio(box.dataset.src); a.preload = 'none';
+    const bar = box.querySelector('.mbar i'), t = box.querySelector('.mtime'), b = box.querySelector('.mplay');
+    a.ontimeupdate = () => { const p = a.duration ? a.currentTime / a.duration * 100 : 0; bar.style.width = p + '%'; box.querySelector('.mbar').setAttribute('aria-valuenow', Math.round(p)); t.textContent = dur(a.currentTime) + ' / ' + dur(a.duration) };
+    a.onplay = () => { b.innerHTML = '<svg aria-hidden="true"><use href="#i-pause"/></svg>'; b.setAttribute('aria-label', 'وقّف'); box.classList.add('on') };
+    a.onpause = a.onended = () => { b.innerHTML = '<svg aria-hidden="true"><use href="#i-play"/></svg>'; b.setAttribute('aria-label', 'شغّل الرسالة الصوتية'); box.classList.remove('on') };
+    a.onerror = () => { t.textContent = 'ما اشتغل، جرّب مرة ثانية'; box._a = null }; return a })();
+  if (e.target.closest('.mspd')) { const r = { 1: 1.5, 1.5: 2, 2: 1 }[a.playbackRate] || 1; a.playbackRate = r; e.target.closest('.mspd').textContent = r + '×'; return }
+  if (e.target.closest('.mbar')) { const r = e.target.closest('.mbar').getBoundingClientRect(); if (a.duration) a.currentTime = a.duration * (r.right - e.clientX) / r.width; return }
+  if (e.target.closest('.mplay')) { if (a.paused) { if (AU && AU !== a) AU.pause(); AU = a; a.play() } else a.pause() }
+});
+
 async function api(p, b) {
   const o = b === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf': CSRF }, body: JSON.stringify(b) };
   const r = await fetch(p, o); if (r.status === 401) { showAuth(); throw new Error('login') }
@@ -271,7 +305,7 @@ async function drawThread(full) {
   $('#ab').hidden = !c.pendingAuto;
   const sig = c.messages.length + ':' + (c.messages.at(-1)?.id || ''); if (sig === lastSig) return; lastSig = sig; let pd = ''; const ms = $('#ms');
   ms.innerHTML = c.messages.length ? c.messages.map(m => { const d = new Date(m.ts).toDateString(); const sep = d !== pd ? `<div class="daysep">${fmtD(m.ts)}</div>` : ''; pd = d;
-    return sep + `<div class="m ${m.fromMe ? 'me' : 'them'} ${m.auto ? 'auto' : ''}">${m.auto ? '<span class="who"><svg aria-hidden="true"><use href="#i-bot"/></svg>رد الموظف</span>\n' : ''}${esc(m.text)}<time>${fmtT(m.ts)}</time></div>` }).join('') : '<div class="empty">ما فيه رسائل</div>';
+    return sep + `<div class="m ${m.fromMe ? 'me' : 'them'} ${m.auto ? 'auto' : ''}">${m.auto ? '<span class="who"><svg aria-hidden="true"><use href="#i-bot"/></svg>رد الموظف</span>\n' : ''}${m.media ? MEDIA(m) : ''}${m.media && /^\[(صورة|فيديو|رسالة صوتية|ملصق|ملف)\]$/.test(m.text) ? '' : esc(m.text)}<time>${fmtT(m.ts)}</time></div>` }).join('') : '<div class="empty">ما فيه رسائل</div>';
   ms.scrollTop = ms.scrollHeight; if (!full) suggest();
 }
 let SUG = [], PREFILL = null;

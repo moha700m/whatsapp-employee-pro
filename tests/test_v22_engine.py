@@ -35,7 +35,7 @@ def test_lids_resolved_never_shown(eng):
     by = {c["jid"]: c for c in chats}
     a = by["966551112222@s.whatsapp.net"]; assert a["disp"] == "0551112222" and not a["hidden"]
     b = by["966553334444@s.whatsapp.net"]; assert b["label"] == "أبو فهد" and b["disp"] == "0553334444" and len(b["n"] if isinstance(b["n"], list) else [0] * b["n"]) == 2
-    c = by[LID_C]; assert c["hidden"] and c["label"] == "رقم مخفي" and c["disp"] == ""
+    c = by[LID_C]; assert c["hidden"] and c["label"] == "عميل #6730" and "رقم مخفي" not in raw and c["disp"] == ""
     assert "217398493896730" not in json.dumps({k: v for k, v in c.items() if k != "jid"}, ensure_ascii=False)
     assert "182772702413028" not in raw                                    # merged into the phone chat
     # a live message from the hidden LID that carries sender_pn resolves it and merges
@@ -66,3 +66,65 @@ def test_disconnect_keep_then_wipe(eng):
     st = e2e.wait(lambda: (s := cl.req("api/state"))["status"] == "qr" and s); assert st["qr"]       # ready to re-link
     cl.req("api/logout", {"wipe": True}); assert cl.req("api/chats") == []
     store = json.loads((Path(d) / "wa" / "store.json").read_text(encoding="utf-8")); assert store["chats"] == {} and store["lidMap"] == {}
+
+
+def test_lid_every_route(eng):
+    """v2.2.1: every LID→phone route Baileys v7 offers resolves and merges the chat."""
+    cl, _ = eng; P = lambda n: f"9665{n}@s.whatsapp.net"
+    routes = {
+        "remoteJidAlt": lambda l, p: cl.req("api/sim/incoming", {"jid": l, "text": "هلا", "key": {"remoteJidAlt": p}}),
+        "participantAlt": lambda l, p: cl.req("api/sim/incoming", {"jid": l, "text": "هلا", "key": {"participant": l, "participantAlt": p}}),
+        "lidRepo": lambda l, p: cl.req("api/sim/lidrepo", {"lid": l, "pn": p}),
+        "lid-mapping.update": lambda l, p: cl.req("api/sim/ev", {"event": "lid-mapping.update", "data": {"lid": l, "pn": p}}),
+        "contacts.upsert": lambda l, p: cl.req("api/sim/ev", {"event": "contacts.upsert", "data": [{"id": l, "phoneNumber": p, "notify": "زبون"}]}),
+        "contacts.update": lambda l, p: cl.req("api/sim/ev", {"event": "contacts.update", "data": [{"id": p, "lid": l}]}),
+        "chats.upsert pnJid": lambda l, p: cl.req("api/sim/ev", {"event": "chats.upsert", "data": [{"id": l, "pnJid": p}]}),
+        "chats.update lidJid": lambda l, p: cl.req("api/sim/ev", {"event": "chats.update", "data": [{"id": p, "lidJid": l}]}),
+    }
+    base = cl.req("api/state")["lid"]["unresolved"]
+    for i, (name, fire) in enumerate(routes.items()):
+        lid, pn = f"5550000000{i:03d}@lid", P(f"5{i:02d}00{i:04d}"[:8])
+        cl.req("api/sim/incoming", {"jid": lid, "text": "السلام عليكم", "name": "عميل"})
+        assert e2e.wait(lambda: lid in {c["jid"] for c in cl.req("api/chats")}), name
+        assert cl.req("api/state")["lid"]["unresolved"] >= 1
+        fire(lid, pn)
+        x = e2e.wait(lambda: (b := {c["jid"]: c for c in cl.req("api/chats")}).get(pn) and lid not in b and b)
+        assert x, f"route {name} did not resolve"
+        assert x[pn]["disp"].startswith("05") and not x[pn]["hidden"], name
+    assert cl.req("api/state")["lid"]["unresolved"] == base
+
+
+MEDIA = Path(__file__).resolve().parent / "media"
+MEDIA_CASES = [("image", "rose.jpg", {"mimetype": "image/jpeg", "caption": "ابي مثل هذا", "width": 480, "height": 360}, "image/jpeg"),
+               ("video", "video.mp4", {"mimetype": "video/mp4", "seconds": 3}, "video/mp4"),
+               ("audio", "voice.ogg", {"mimetype": "audio/ogg; codecs=opus", "seconds": 6, "ptt": True}, "audio/ogg"),
+               ("sticker", "sticker.webp", {"mimetype": "image/webp"}, "image/webp"),
+               ("document", "price-list.pdf", {"mimetype": "application/pdf", "fileName": "price-list.pdf"}, "application/pdf")]
+
+def get_raw(cl, path, headers=None):
+    import urllib.request
+    rq = urllib.request.Request(cl.base.rstrip("/") + "/" + path, headers=headers or {})
+    with cl.op.open(rq) as r: return r.status, r.headers, r.read()
+
+def test_media_open_play_cache(eng):
+    """v2.2.1: customer images, videos, voice notes, stickers and documents open/play from a cached local file."""
+    import base64
+    cl, d = eng; jid = "966559990000@s.whatsapp.net"; ids = {}
+    for kind, fn, body, mime in MEDIA_CASES:
+        raw = (MEDIA / fn).read_bytes()
+        ids[kind] = cl.req("api/sim/media", {"jid": jid, "kind": kind, "name": "عميل تجربة", "body": {**body, "fakeData": base64.b64encode(raw).decode()}})["id"]
+    ch = e2e.wait(lambda: (c := cl.req("api/chat?jid=" + jid)) and len([m for m in c["messages"] if m.get("media")]) == 5 and c)
+    by = {m["media"]["type"]: m for m in ch["messages"] if m.get("media")}
+    assert by["audio"]["media"]["ptt"] and by["audio"]["media"]["secs"] == 6 and by["video"]["media"]["secs"] == 3
+    assert by["document"]["media"]["name"] == "price-list.pdf" and by["image"]["text"] == "ابي مثل هذا"
+    assert "fakeData" not in json.dumps(ch)                      # keys/bytes never leak into the chat JSON
+    for kind, fn, body, mime in MEDIA_CASES:
+        st, h, data = get_raw(cl, "api/media?id=" + ids[kind])
+        assert st == 200 and data == (MEDIA / fn).read_bytes() and h["content-type"].startswith(mime), kind
+    st, h, data = get_raw(cl, "api/media?id=" + ids["video"], {"Range": "bytes=0-99"})   # seeking in the video player
+    assert st == 206 and len(data) == 100
+    cached = [p for p in Path(d).rglob(ids["audio"] + ".*") if p.parent.name == "media"]; assert cached and cached[0].suffix == ".ogg"
+    st, h, _ = get_raw(cl, "api/media?id=" + ids["document"] + "&dl=1"); assert "attachment" in h["content-disposition"]
+    import urllib.error
+    with pytest.raises(urllib.error.HTTPError) as e: get_raw(cl, "api/media?id=../../store")
+    assert e.value.code == 404

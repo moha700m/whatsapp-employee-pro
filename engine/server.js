@@ -15,7 +15,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1', FAKE_FAST = FAKE && process.env.HUMAN_TYPING !== '1';
-const VERSION = process.env.APP_VERSION || '2.2.0';
+const VERSION = process.env.APP_VERSION || '2.2.1';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------
@@ -77,23 +77,69 @@ function learnFromKey(k) {
   if (isLid(k.remoteJid)) { if (k.senderPn) learnLid(k.remoteJid, k.senderPn); else if (k.participantPn) learnLid(k.remoteJid, k.participantPn) }
   if (isLid(k.senderLid) && isPn(k.remoteJid)) learnLid(k.senderLid, k.remoteJid);
   if (isLid(k.participant) && k.participantPn) learnLid(k.participant, k.participantPn);
+  // Baileys v7: the "other" addressing form of the same chat/sender
+  if (isLid(k.remoteJid) && isPn(normJid(k.remoteJidAlt))) learnLid(k.remoteJid, k.remoteJidAlt);
+  if (isPn(k.remoteJid) && isLid(normJid(k.remoteJidAlt))) learnLid(k.remoteJidAlt, k.remoteJid);
+  if (isLid(k.participant) && isPn(normJid(k.participantAlt))) learnLid(k.participant, k.participantAlt);
+  if (isPn(k.participant) && isLid(normJid(k.participantAlt))) learnLid(k.participantAlt, k.participant);
 }
 function txt(m) {
-  const x = m.message || {}; const e = x.ephemeralMessage?.message || x.viewOnceMessage?.message || null; if (e) return txt({ message: e });
-  return x.conversation || x.extendedTextMessage?.text || x.imageMessage?.caption || x.videoMessage?.caption ||
+  const x = unwrap(m.message);
+  return x.conversation || x.extendedTextMessage?.text || x.imageMessage?.caption || x.videoMessage?.caption || x.documentMessage?.caption ||
     (x.imageMessage ? '[صورة]' : x.audioMessage ? '[رسالة صوتية]' : x.locationMessage ? '[موقع]' : x.documentMessage ? '[ملف]' : x.stickerMessage ? '[ملصق]' : x.videoMessage ? '[فيديو]' : x.contactMessage ? '[جهة اتصال]' : '');
 }
+// ---------------- media (images, video, voice notes, stickers, documents) ----------------
+// The message's media keys are kept in DATA_DIR/media/idx/<id>.json; the file itself is fetched only when the owner opens it,
+// then cached in DATA_DIR/media/<id>.<ext> (kept across restarts and upgrades).
+const MDIR = path.join(DIR, 'media'), MIDX = path.join(MDIR, 'idx'); fs.mkdirSync(MIDX, { recursive: true });
+const MKINDS = { imageMessage: 'image', videoMessage: 'video', audioMessage: 'audio', stickerMessage: 'sticker', documentMessage: 'document', documentWithCaptionMessage: 'document' };
+const safeId = id => String(id || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'application/pdf': 'pdf' };
+function unwrap(x) { x = x || {}; return x.ephemeralMessage?.message || x.viewOnceMessage?.message || x.viewOnceMessageV2?.message || x.documentWithCaptionMessage?.message || x }
+function mediaOf(m) {
+  const x = unwrap(m.message); const k = Object.keys(MKINDS).find(k => x[k]); if (!k) return null; const v = x[k];
+  const mime = String(v.mimetype || '').split(';')[0] || (k === 'stickerMessage' ? 'image/webp' : '');
+  const meta = { type: MKINDS[k], mime, ...(v.seconds ? { secs: Number(v.seconds) } : {}), ...(v.ptt ? { ptt: true } : {}), ...(v.fileName ? { name: String(v.fileName).slice(0, 120) } : {}),
+    ...(v.fileLength ? { size: Number(v.fileLength) } : {}), ...(v.width ? { w: v.width, h: v.height } : {}), ...(v.jpegThumbnail ? { thumb: Buffer.from(v.jpegThumbnail).toString('base64').slice(0, 8000) } : {}) };
+  try { const id = safeId(m.key.id), f = path.join(MIDX, id + '.json'); if (id && !fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify({ key: m.key, message: m.message, messageTimestamp: m.messageTimestamp }, (kk, vv) => vv?.type === 'Buffer' || vv instanceof Uint8Array ? { $b: Buffer.from(vv.data || vv).toString('base64') } : vv)) } catch { }
+  return meta;
+}
+const revive = (k, v) => v && typeof v === 'object' && typeof v.$b === 'string' ? Buffer.from(v.$b, 'base64') : v;
+const mediaBusy = new Map();
+async function mediaFile(id) {
+  id = safeId(id); if (!id) return null;
+  const have = fs.readdirSync(MDIR).find(f => f.startsWith(id + '.')); if (have) return path.join(MDIR, have);
+  if (mediaBusy.has(id)) return mediaBusy.get(id);
+  const job = (async () => {
+    const ix = path.join(MIDX, id + '.json'); if (!fs.existsSync(ix)) return null;
+    const msg = JSON.parse(fs.readFileSync(ix, 'utf8'), revive); const x = unwrap(msg.message); const k = Object.keys(MKINDS).find(k => x[k]); const v = x[k] || {};
+    let buf;
+    if (FAKE) buf = v.fakeData ? Buffer.from(v.fakeData, 'base64') : null;
+    else {
+      const B = SOCK?._B; if (!B?.downloadMediaMessage) throw new Error('offline');
+      // expired history media → ask the phone to re-upload (updateMediaMessage), then retry
+      buf = await B.downloadMediaMessage(msg, 'buffer', {}, { logger: SOCK._log, reuploadRequest: SOCK.updateMediaMessage });
+    }
+    if (!buf?.length) return null;
+    const mime = String(v.mimetype || '').split(';')[0] || (k === 'stickerMessage' ? 'image/webp' : 'application/octet-stream');
+    const f = path.join(MDIR, `${id}.${EXT[mime] || (v.fileName && path.extname(v.fileName).slice(1).replace(/[^a-z0-9]/gi, '').slice(0, 6)) || 'bin'}`);
+    fs.writeFileSync(f, buf); return f;
+  })().finally(() => mediaBusy.delete(id));
+  mediaBusy.set(id, job); return job;
+}
+
 function addMsg(m) {
-  learnFromKey(m.key); const j = canon(m.key?.remoteJid); if (BAD_JID(j) && !j?.endsWith('@g.us')) return null; if (!j) return null;
+  learnFromKey(m.key); if (isLid(normJid(m.key?.remoteJid)) && !store.lidMap[normJid(m.key.remoteJid)]) lidAsk(m.key.remoteJid); const j = canon(m.key?.remoteJid); if (BAD_JID(j) && !j?.endsWith('@g.us')) return null; if (!j) return null;
   const t = txt(m); if (!t) return null; const c = chat(j);
   if (c.messages.some(x => x.id === m.key.id)) return null;
-  const msg = { id: m.key.id, ...(m.key.remoteJid !== j ? { rjid: m.key.remoteJid } : {}), fromMe: !!m.key.fromMe, ts: Number(m.messageTimestamp || Date.now() / 1000) * 1000, text: t };
+  const media = mediaOf(m);
+  const msg = { id: m.key.id, ...(m.key.remoteJid !== j ? { rjid: m.key.remoteJid } : {}), fromMe: !!m.key.fromMe, ts: Number(m.messageTimestamp || Date.now() / 1000) * 1000, text: t, ...(media ? { media } : {}) };
   c.messages.push(msg); if (c.messages.length > 2000) c.messages.splice(0, c.messages.length - 2000);
   if (!m.key.fromMe && m.pushName && !c.name) c.name = m.pushName; if (msg.ts > (c.t || 0)) c.t = msg.ts; return { c, msg };
 }
 function addContact(c) {
   if (!c?.id) return; const pnOf = c.phoneNumber || c.jid || (isPn(c.id) ? c.id : null);
-  if (c.lid && isPn(pnOf)) learnLid(c.lid, pnOf); if (isLid(c.id) && isPn(pnOf)) learnLid(c.id, pnOf);
+  if (c.lid && isPn(normJid(pnOf))) learnLid(c.lid, pnOf); if (isLid(normJid(c.id)) && isPn(normJid(pnOf))) learnLid(c.id, pnOf);
   const id = canon(c.id); store.contacts[id] = { ...store.contacts[id], ...Object.fromEntries(Object.entries(c).filter(([, v]) => v != null && v !== '')) };
   const ch = store.chats[id]; if (ch && (c.name || c.notify || c.verifiedName)) ch.name = c.name || c.notify || c.verifiedName || ch.name;
 }
@@ -179,12 +225,12 @@ async function connect() {
     let sock;
     if (FAKE) { const { makeFakeSocket } = await import('./fakewa.js'); sock = fake = makeFakeSocket() }
     else {
-      const pino = (await import('pino')).default; const M = await import('@whiskeysockets/baileys'); const B = M.useMultiFileAuthState ? M : M.default;
+      const pino = (await import('pino')).default; const M = await import('baileys'); const B = M.useMultiFileAuthState ? M : M.default;
       const makeWASocket = typeof B.default === 'function' ? B.default : B.makeWASocket;
       const { state: auth, saveCreds } = await B.useMultiFileAuthState(path.join(DIR, 'auth')); const { version } = await B.fetchLatestBaileysVersion().catch(() => ({}));
       sock = makeWASocket({ auth, version, logger: pino({ level: 'silent' }), browser: PROFILES[profileIdx % PROFILES.length](B), syncFullHistory: true,
         shouldSyncHistoryMessage: () => true, markOnlineOnConnect: false, printQRInTerminal: false, getMessage: async () => undefined });
-      sock.ev.on('creds.update', saveCreds); sock._B = B;
+      sock.ev.on('creds.update', saveCreds); sock._B = B; sock._log = pino({ level: 'silent' });
     }
     const old = SOCK; realSend = sock.sendMessage.bind(sock); realPresence = sock.sendPresenceUpdate?.bind(sock) || null; realRead = sock.readMessages?.bind(sock) || null; SOCK = sock;
     if (old && old !== sock) try { old.end?.(undefined) } catch { }
@@ -193,7 +239,7 @@ async function connect() {
       if (typeof sock[f] === 'function') sock[f] = async () => {};
     sock.ev.on('connection.update', async u => { if (SOCK !== sock) return;  // ignore events from a replaced socket
       if (u.qr) { state.qr = await QRCode.toDataURL(u.qr, { width: 360, margin: 1 }); state.status = 'qr'; state.error = null; failsNoQr = 0; console.log('WA qr ready') }
-      if (u.connection === 'open') { if (!store.wa.linkedAt || store.wa.me !== phoneOf(sock.user?.id)) { store.wa.linkedAt = Date.now(); store.wa.me = phoneOf(sock.user?.id) } state.status = 'connected'; state.qr = null; state.error = null; failsNoQr = 0; state.me = phoneOf(sock.user?.id); state.syncing = true; audit('whatsapp_linked', {}); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 25e3) }
+      if (u.connection === 'open') { setTimeout(() => tryLidRepo().then(saveSoon), 3000); if (!store.wa.linkedAt || store.wa.me !== phoneOf(sock.user?.id)) { store.wa.linkedAt = Date.now(); store.wa.me = phoneOf(sock.user?.id) } state.status = 'connected'; state.qr = null; state.error = null; failsNoQr = 0; state.me = phoneOf(sock.user?.id); state.syncing = true; audit('whatsapp_linked', {}); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 25e3) }
       if (u.connection === 'close') {
         const err = u.lastDisconnect?.error, code = err?.output?.statusCode, msg = String(err?.message || ''); connecting = false; state.attempts++;
         console.log(new Date().toISOString(), 'WA close', code, msg.slice(0, 160));
@@ -206,7 +252,7 @@ async function connect() {
       }
     });
     sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
-      chats?.forEach(c => { if (c.pnJid) learnLid(c.id, c.pnJid); if (c.lidJid) learnLid(c.lidJid, c.id) });
+      chats?.forEach(chatPn);
       contacts?.forEach(addContact);
       chats?.forEach(c => { if (BAD_JID(c.id)) return; const x = chat(c.id); if (c.name) x.name = c.name; const t = Number(c.conversationTimestamp || 0) * 1000; if (t > (x.t || 0)) x.t = t; x.hist = true });
       messages?.forEach(addMsg); tryLidRepo();
@@ -214,7 +260,7 @@ async function connect() {
     });
     sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { const r = addMsg(m); if (r && type === 'notify') onIncoming(resolve(r.c), r.msg) } saveSoon() });
     sock.ev.on('lid-mapping.update', x => { for (const m of [].concat(x || [])) learnLid(m.lid, m.pn) });
-    sock.ev.on('chats.upsert', cs => { for (const c of cs || []) { if (c.pnJid) learnLid(c.id, c.pnJid); if (c.lidJid) learnLid(c.lidJid, c.id) } });
+    sock.ev.on('chats.upsert', cs => { (cs || []).forEach(chatPn); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(chatPn) });
     sock.ev.on('contacts.upsert', cs => { cs.forEach(addContact); saveSoon() }); sock.ev.on('contacts.update', cs => { cs.forEach(addContact); saveSoon() });
   } catch (e) { console.log(new Date().toISOString(), 'WA start failed', e?.stack || e); state.status = 'reconnecting'; state.error = { code: null, text: diagnose(null, String(e?.message || e)), at: Date.now() }; scheduleReconnect(5000) }
   finally { connecting = false }
@@ -222,23 +268,50 @@ async function connect() {
 if (process.env.NO_WA === '1') state.status = 'connected'; else connect();
 
 // newer Baileys builds keep their own LID store — use it when present (no network calls)
-async function tryLidRepo() {
-  const lm = SOCK?.signalRepository?.lidMapping; if (!lm?.getPNForLID) return;
-  for (const j of Object.keys(store.chats).filter(isLid).slice(0, 500)) { try { const pn = await lm.getPNForLID(j); if (pn) learnLid(j, pn) } catch { } }
+// history-sync chat records carry the phone in pnJid / phoneNumber, or the LID in lidJid
+function chatPn(c) {
+  const id = normJid(c?.id); if (!id) return; const pn = normJid(c.pnJid || c.phoneNumber), lid = normJid(c.lidJid || c.lid);
+  if (isLid(id) && isPn(pn)) learnLid(id, pn); if (isPn(id) && isLid(lid)) learnLid(lid, id);
 }
+// Baileys v7 keeps a local LID↔phone store (signalRepository.lidMapping) — ask it in one batch, no network messages
+let lidBusy = false;
+async function tryLidRepo() {
+  const lm = SOCK?.signalRepository?.lidMapping; if (!lm || lidBusy) return; lidBusy = true;
+  try {
+    const lids = [...new Set([...Object.keys(store.chats), ...Object.keys(store.contacts)].map(normJid).filter(j => isLid(j) && !store.lidMap[j]))];
+    for (let i = 0; i < lids.length; i += 200) {
+      const part = lids.slice(i, i + 200); let got = null;
+      if (lm.getPNsForLIDs) try { got = await lm.getPNsForLIDs(part) } catch { }
+      if (Array.isArray(got)) got.forEach(m => m && learnLid(m.lid, m.pn));
+      else if (lm.getPNForLID) for (const j of part) { try { const pn = await lm.getPNForLID(j); if (pn) learnLid(j, pn) } catch { } }
+    }
+  } finally { lidBusy = false; lidLog('repo') }
+}
+const lidQ = new Set(); let lidT = null;
+function lidAsk(j) { lidQ.add(normJid(j)); clearTimeout(lidT); lidT = setTimeout(() => { lidQ.clear(); tryLidRepo().then(saveSoon) }, 1500) }
+function lidStats() {
+  const all = Object.values(store.chats).filter(c => !c.isGroup); const lids = all.filter(c => isLid(c.jid));
+  return { chats: all.length, withPhone: all.length - lids.length, unresolved: lids.length, known: Object.keys(store.lidMap).length };
+}
+function lidLog(why) { const x = lidStats(); console.log(new Date().toISOString(), 'LID', why, `resolved=${x.withPhone} unresolved=${x.unresolved} map=${x.known}`) }
+setInterval(() => { if (SOCK && state.status === 'connected' && lidStats().unresolved) tryLidRepo().then(saveSoon) }, 60e3).unref?.();
 // ---------------- data views ----------------
 
 const byLid = () => { if (Date.now() - byLidCache.t > 5000) { const m = {}; for (const c of Object.values(store.contacts)) if (c.lid) m[c.lid] = c; byLidCache = { t: Date.now(), m } } return byLidCache.m };
+// short stable tag for a contact whose phone WhatsApp has not shared yet (last 4 digits of the LID)
+const shortId = j => String(j || '').split('@')[0].replace(/\D/g, '').slice(-4) || '؟';
 function resolve(c) {
-  const pn = isLid(c.jid) ? (store.lidMap[c.jid] || byLid()[c.jid]?.jid || null) : c.jid;
+  const bl = byLid()[c.jid]; const pn = isLid(c.jid) ? (store.lidMap[c.jid] || normJid(bl?.phoneNumber) || (isPn(normJid(bl?.jid)) ? normJid(bl.jid) : null) || null) : c.jid;
   const k = (pn && store.contacts[pn]) || store.contacts[c.jid] || byLid()[c.jid] || {};
   const phone = isPn(pn) ? phoneOf(pn) : '', disp = fmtPhone(phone);
   const cr = store.crm[c.jid]; const name = (cr?.profileEdit?.name || k.name || k.notify || k.verifiedName || c.name || cr?.profileAuto?.data?.name || '').trim();
-  return { ...c, phone, disp, name, hidden: !phone, label: name || disp || 'رقم مخفي' };
+  return { ...c, phone, disp, name, hidden: !phone, hid: phone ? '' : shortId(c.jid), label: name || disp || ('عميل #' + shortId(c.jid)) };
 }
 // startup: re-learn from saved contacts (older versions stored lid on the contact) and merge leftovers
 setTimeout(() => { for (const c of Object.values(store.contacts)) { const pn = c.phoneNumber || c.jid || (isPn(c.id) ? c.id : null); if (c.lid && isPn(pn)) learnLid(c.lid, pn) }
-  for (const [l, p] of Object.entries(store.lidMap)) if (store.chats[l]) { delete store.lidMap[l]; learnLid(l, p) } }, 0);
+  for (const [l, p] of Object.entries(store.lidMap)) if (store.chats[l]) { delete store.lidMap[l]; learnLid(l, p) }
+  for (const c of Object.values(store.chats)) for (const m of c.messages || []) if (m.rjid && isPn(normJid(m.rjid)) && isLid(c.jid)) learnLid(c.jid, m.rjid);
+  lidLog('startup'); saveSoon() }, 0);
 const chatsList = () => Object.values(store.chats).filter(c => (c.messages.length || c.hist) && !c.isGroup && !BAD_JID(c.jid)).map(resolve);
 const lastOf = c => c.messages.reduce((a, m) => m.ts > a.ts ? m : a, { ts: 0 });
 const scoreOf = c => store.crm[c.jid]?.aiScore ?? Math.max(keywordScore(c), store.crm[c.jid]?.score || 0);
@@ -317,7 +390,7 @@ r.get('/api/state', (q, s) => {
   s.json({ status: state.status, qr: state.qr, me: state.me, error: state.error, attempts: state.attempts, waitingSec: Math.round((Date.now() - state.since) / 1000), syncing: state.syncing, lastSync: state.lastSync, version: VERSION, sim: FAKE,
     brain: brainOk || !!BRAIN_URL && S().aiEnabled, chats: cs.length, messages: cs.reduce((a, c) => a + c.messages.length, 0), analysis,
     unreadAlerts: store.alerts.filter(a => !a.read).length, now: hm(new Date(), S().tz), open: inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)),
-    employee: { enabled: !!ar.enabled, active: !!ar.enabled && scheduleOpen(ar, S(), Date.now()), schedule: ar.schedule, mode: ar.mode, pending: pending.size, guard: (() => { const l = limits({ ...AUTO_DEFAULTS, ...ar }, store.wa.linkedAt), a = store.sends.filter(x => x.auto); return { ...l, hour: a.filter(x => Date.now() - x.t < 36e5).length, day: a.length } })() }, version: VERSION, meDisp: fmtPhone(state.me || '') });
+    employee: { enabled: !!ar.enabled, active: !!ar.enabled && scheduleOpen(ar, S(), Date.now()), schedule: ar.schedule, mode: ar.mode, pending: pending.size, guard: (() => { const l = limits({ ...AUTO_DEFAULTS, ...ar }, store.wa.linkedAt), a = store.sends.filter(x => x.auto); return { ...l, hour: a.filter(x => Date.now() - x.t < 36e5).length, day: a.length } })() }, lid: lidStats(), version: VERSION, meDisp: fmtPhone(state.me || '') });
 });
 r.post('/api/analyze', async (q, s) => { analysis = await analyze(chatsList()); fs.writeFileSync(path.join(DIR, 'analysis.json'), JSON.stringify(analysis)); s.json(analysis) });
 r.get('/report.html', (q, s) => analysis ? s.send(reportHTML(analysis, S())) : s.status(400).send('رتّب المحادثات أول'));
@@ -336,6 +409,12 @@ r.get('/api/chats', (q, s) => s.json(chatsList().map(c => {
   return { jid: c.jid, name: c.name, phone: c.phone, disp: c.disp, label: c.label, hidden: c.hidden, last: l.text || '', lastAt: l.ts || c.t || 0, fromMe: !!l.fromMe, auto: !!l.auto, n: c.messages.length,
     tag: cr.tag || 'جديد', status: cr.status || 'open', score: scoreOf(c), orders: (cr.orders || []).length, ...st };
 }).sort((a, b) => b.lastAt - a.lastAt)));
+r.get('/api/media', async (q, s) => {
+  try { const f = await mediaFile(q.query.id); if (!f) return s.status(404).json({ error: 'الملف ما عاد موجود على واتساب' });
+    s.set('Cache-Control', 'private, max-age=31536000'); if (q.query.dl) s.set('Content-Disposition', `attachment; filename="${path.basename(f)}"`);
+    s.sendFile(f) }
+  catch (e) { s.status(502).json({ error: 'ما قدرنا نجيب الملف الحين، تأكد إن الجوال متصل وجرب مرة ثانية' }) }
+});
 r.get('/api/chat', async (q, s) => { const c = chatsList().find(x => x.jid === q.query.jid); if (!c) return s.json(null); const profile = q.query.profile ? await profileOf(c) : undefined; s.json({ ...c, messages: [...c.messages].sort((a, b) => a.ts - b.ts).slice(-400), crm: store.crm[c.jid] || {}, pendingAuto: pending.has(c.jid), profile, ...chatState(c) }) });
 r.post('/api/send', async (q, s) => {
   const { jid, text, confirm } = q.body || {};
@@ -502,7 +581,10 @@ r.post('/api/ai/reengage', (q, s) => {
 // ---- simulator (FAKE_WA=1 only): lets tests and design QA drive a full flow without a phone
 if (FAKE) {
   r.post('/api/sim/link', (q, s) => { fake?.link(q.body?.me || '966500000000', q.body?.history); s.json({ ok: true }) });
-  r.post('/api/sim/incoming', (q, s) => { const { jid, text, name, ts, senderPn } = q.body || {}; s.json({ id: fake?.incoming(jid, text, name, ts, senderPn) }) });
+  r.post('/api/sim/incoming', (q, s) => { const { jid, text, name, ts, senderPn, key } = q.body || {}; s.json({ id: fake?.incoming(jid, text, name, ts, senderPn, key) }) });
+  r.post('/api/sim/media', (q, s) => { const { jid, kind, body, name } = q.body || {}; if (!/^(image|video|audio|sticker|document)$/.test(kind || '')) return s.status(400).end(); s.json({ id: fake?.incomingMedia(jid, kind, body, name) }) });
+  r.post('/api/sim/ev', (q, s) => { const { event, data } = q.body || {}; if (!/^(contacts|chats|lid-mapping)\./.test(event || '')) return s.status(400).end(); fake?.emit(event, data); s.json({ ok: true }) });
+  r.post('/api/sim/lidrepo', async (q, s) => { const { lid, pn } = q.body || {}; fake?.signalRepository.lidMapping.set(lid, pn); await tryLidRepo(); s.json(lidStats()) });
   r.get('/api/sim/outbox', (q, s) => s.json(fake?.outbox || []));
 }
 r.use(express.static(path.join(HERE, 'public'), { index: 'index.html' }));

@@ -86,7 +86,7 @@ jobs:
           "install / close-reopen / upgrade / uninstall / reinstall: data kept"
       - name: Zip portable app
         shell: pwsh
-        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.2.0.zip
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.2.1.zip
       - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
       - uses: actions/upload-artifact@v7

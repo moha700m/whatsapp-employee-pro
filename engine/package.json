@@ -1,19 +1,19 @@
 {
- "name": "whatsapp-employee-engine",
- "type": "module",
- "private": true,
- "scripts": {
-  "start": "node server.js",
-  "test": "node --test test/employee.test.mjs test/antiban.test.mjs"
- },
- "dependencies": {
-  "@whiskeysockets/baileys": "^6.7.24",
-  "express": "^5.3.0",
-  "pino": "^10.4.0",
-  "qrcode": "^1.5.4"
- },
- "engines": {
-  "node": ">=20"
- },
- "version": "2.2.0"
+  "name": "whatsapp-employee-engine",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/employee.test.mjs test/antiban.test.mjs"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "pino": "^10.4.0",
+    "qrcode": "^1.5.4",
+    "baileys": "7.0.0-rc14"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "version": "2.2.1"
 }
