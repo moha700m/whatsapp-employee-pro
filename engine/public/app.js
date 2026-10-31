@@ -151,7 +151,7 @@ const HINTS = {
   home: ['الرئيسية', 'هنا ملخص يومك: كم عميل ينتظر ردك، مين جاهز يشتري، الطلبات المفتوحة والمتابعات. اضغط على أي اسم يفتح محادثته.'],
   chats: ['المحادثات', 'كل محادثاتك القديمة والجديدة. اختر عميل، وتحت خانة الرد تلقى ردود مقترحة من المساعد وردودك الجاهزة. ما ينرسل شي إلا لما تضغط «إرسال» وتأكد.'],
   sales: ['الطلبات والعملاء', 'كل الطلبات المسجّلة وحالتها، ومسار العملاء من «جديد» إلى «تم التوصيل». غيّر حالة الطلب من هنا، وتصنيف العميل من ملفه داخل المحادثة.'],
-  mkt: ['التسويق', 'اكتب حملة لمناسبة بضغطة، جهّز رسالة جماعية كمسودة، واطلع العملاء القدامى اللي تقدر ترجعهم. الإرسال دايم بيدك.'],
+  mkt: ['التسويق', 'كل يوم نرتب لك أهم ٥ خطوات تسويق، ومعها رسالة جاهزة. تفتح محادثة العميل وترسل بنفسك، وحدة وحدة.'],
   emp: ['الموظف', 'الموظف يرد على عملائك تلقائياً لما تشغّله: يرحّب ويجاوب الأسئلة البسيطة، وإذا العميل يبي يطلب أو يسأل عن سعر أو عنده شكوى يقوله «لحظات» وينبهك ترد بنفسك. مطفي لين تشغّله أنت.'],
   set: ['الإعدادات', 'بيانات المحل، قائمة الأسعار اللي يعتمد عليها المساعد، الردود الجاهزة، التنبيهات، قفل البرنامج، والسجل.'],
 };
@@ -249,11 +249,16 @@ function errBox(t, retry) { // shown when the local engine does not answer
 function renderChats() {
   const el = $('#p-chats');
   if (ST.status !== 'connected') { el.innerHTML = `<div class="card empty"><b>الواتساب غير مربوط</b>اربطه من الرئيسية وتطلع محادثاتك هنا.<div style="margin-top:12px"><button class="btn primary" id="gl">اربط الحين</button></div></div>`; $('#gl').onclick = () => go('home'); return }
-  el.innerHTML = `<div class="chatwrap ${innerWidth < 1200 ? '' : ''}" id="cw"><div class="card clist"><div class="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input id="cq" placeholder="ابحث بالاسم أو الرقم" aria-label="ابحث بالاسم أو الرقم"></div>
-   <div class="filters" style="margin:12px 0 6px" id="cf" role="group" aria-label="تصفية"></div><small class="muted" id="clCount" style="display:block;margin-bottom:6px" aria-live="polite"></small><div id="cl"></div></div>
-   <div class="card thread" id="th"><div class="empty" style="margin:auto"><b>اختر محادثة</b>من القائمة على اليمين.</div></div><div class="card side-panel" id="sp"><div class="empty">ملف العميل يطلع هنا</div></div></div>`;
-  $('#cq').oninput = drawList; drawFilters(); fitChat(); lastSig = ''; loadChats().then(() => { if (CH) openChat(CH) });
+  el.innerHTML = `<div class="chatwrap" id="cw"><div class="clist"><div class="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input id="cq" placeholder="ابحث بالاسم أو الرقم" aria-label="ابحث بالاسم أو الرقم"></div>
+   <div class="filters" style="margin:12px 0 6px" id="cf" role="group" aria-label="تصفية"></div><small class="muted" id="clCount" aria-live="polite"></small><div id="cl"></div></div>
+   <div class="thread" id="th"><div class="th-empty"><svg aria-hidden="true"><use href="#i-chat"/></svg><b>اختر محادثة</b><span>محادثاتك مرتبة مثل واتساب: الأحدث فوق.</span></div></div><aside class="side-panel" id="sp" aria-label="معلومات العميل"></aside><div class="sp-scrim" id="spx"></div></div>`;
+  $('#spx').onclick = () => $('#cw').classList.remove('panel'); $('#cq').oninput = drawList; drawFilters(); fitChat(); lastSig = ''; loadChats().then(() => { if (CH) openChat(CH) });
 }
+// WhatsApp-style list time: clock today, «أمس», weekday this week, else date
+const hue = j => [...String(j)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 360, 7);
+function clock(ts) { if (!ts) return ''; const d = new Date(ts), n = new Date(), day = 864e5, t0 = new Date(n.toDateString()).getTime();
+  if (ts >= t0) return d.toLocaleTimeString('ar-SA', { hour: 'numeric', minute: '2-digit' }); if (ts >= t0 - day) return 'أمس';
+  if (ts >= t0 - 6 * day) return d.toLocaleDateString('ar-SA', { weekday: 'long' }); return d.toLocaleDateString('ar-SA', { day: 'numeric', month: 'numeric', year: '2-digit' }) }
 function drawFilters() {
   const f = [['all', 'الكل'], ['wait', 'ينتظر ردك'], ['new', 'جديد'], ['orders', 'عنده طلب'], ['hot', 'ساخن']], isTag = FILTER.startsWith('t:') || FILTER === 'resolved';
   $('#cf').innerHTML = f.map(([k, l]) => `<button data-f="${esc(k)}" class="${FILTER === k ? 'on' : ''}" aria-pressed="${FILTER === k}">${esc(l)}</button>`).join('') +
@@ -277,8 +282,8 @@ function drawList(more) {
   else if (FILTER.startsWith('t:')) l = l.filter(c => c.tag === FILTER.slice(2)); else l = l.filter(c => c.status !== 'resolved');
   if (!more) LIMIT = Math.max(120, LIMIT);
   const shown = l.slice(0, LIMIT);
-  const h = shown.map(c => `<button class="ci ${c.jid === CH ? 'on' : ''} ${c.state === 'wait' ? 'is-wait' : ''}" data-j="${esc(c.jid)}"><div class="av">${ini(who(c))}</div><div class="grow"><div class="t1"><b class="ell grow">${B(who(c))}</b><small>${ago(c.lastAt)}</small></div>
-   <div class="t2"><small class="ell grow">${c.last ? (c.fromMe ? (c.auto ? 'الموظف: ' : 'أنت: ') : '') + esc(c.last) : (c.name && c.disp ? PN(c) : 'محادثة قديمة')}</small></div><div class="t3">${STB(c)}${c.score >= SET.hotScore ? '<span class="chip r">ساخن</span>' : ''}</div></div></button>`).join('')
+  const h = shown.map(c => `<button class="ci ${c.jid === CH ? 'on' : ''} ${c.state === 'wait' ? 'is-wait' : ''}" data-j="${esc(c.jid)}"><div class="av" style="--h:${hue(c.jid)}">${ini(who(c))}</div><div class="grow"><div class="t1"><b class="ell grow">${B(who(c))}</b><small class="${c.state === 'wait' ? 'hot-t' : ''}">${clock(c.lastAt)}</small></div>
+   <div class="t2"><span class="ell grow">${c.fromMe ? `<svg class="tick" aria-hidden="true"><use href="#i-check"/></svg>${c.auto ? 'الموظف: ' : ''}` : ''}${c.last ? esc(c.last) : (c.name && c.disp ? PN(c) : 'محادثة قديمة')}</span>${c.pinned ? '<svg class="pin" aria-label="مثبّتة"><use href="#i-pin"/></svg>' : ''}${c.state === 'wait' ? '<i class="wdot" aria-label="ينتظر ردك"></i>' : ''}</div><div class="t3">${STB(c)}${c.score >= SET.hotScore ? '<span class="chip r">ساخن</span>' : ''}</div></div></button>`).join('')
     + (l.length > LIMIT ? `<button class="btn block ghost" id="clMore">اعرض ${num(Math.min(120, l.length - LIMIT))} محادثة زيادة (باقي ${num(l.length - LIMIT)})</button>` : '');
   const cl = $('#cl'); if (cl._h !== h) { const st = cl.scrollTop; cl.innerHTML = h || `<div class="empty"><b>${CL.length ? 'ما فيه نتائج' : ST.syncing ? 'نحمّل المحادثات…' : 'ما فيه محادثات للحين'}</b>${CL.length ? 'جرّب تصفية ثانية.' : ''}</div>`; cl._h = h; cl.scrollTop = st;
     cl.querySelectorAll('.ci').forEach(r => r.onclick = () => openChat(r.dataset.j)); const m = $('#clMore'); if (m) m.onclick = () => { LIMIT += 120; drawList(true) } }
@@ -289,15 +294,17 @@ async function openChat(j) { CH = j; lastSig = ''; if (PAGE !== 'chats') { go('c
 async function drawThread(full) {
   let c; try { c = await api('api/chat?jid=' + encodeURIComponent(CH)) } catch { return } const th = $('#th'); if (!c || !th) return;
   if (full || !th.querySelector('.msgs')) {
-    th.innerHTML = `<div class="th-head"><div class="av">${ini(who(c))}</div><div class="grow"><b class="ell" style="display:block">${esc(who(c))}</b><small class="muted">${c.name ? PN(c) : (c.disp ? '' : 'رقمه مخفي من واتساب')}</small></div>
+    th.innerHTML = `<div class="th-head"><button class="icon-btn th-back" id="tbk" aria-label="رجوع للمحادثات"><svg aria-hidden="true"><use href="#i-x"/></svg></button><div class="av" style="--h:${hue(c.jid)}">${ini(who(c))}</div><div class="grow"><b class="ell" style="display:block">${esc(who(c))}</b><small class="muted">${c.name ? PN(c) : (c.disp ? '' : 'رقمه مخفي من واتساب')}</small></div>
      <label class="sr" for="cst" hidden>حالة المحادثة</label><select id="cst" aria-label="حالة المحادثة"><option value="open">مفتوحة</option><option value="pending">معلّقة</option><option value="resolved">منتهية</option></select>
-     <button class="btn sm" id="pt" aria-label="ملف العميل"><svg aria-hidden="true"><use href="#i-user"/></svg>ملف العميل</button></div>
+     <button class="icon-btn info" id="pt" aria-label="معلومات العميل والطلبات" title="معلومات العميل والطلبات"><svg aria-hidden="true"><use href="#i-info"/></svg></button></div>
      <div class="autobar" id="ab" hidden><span class="spin"></span>الموظف بيرد عليه خلال ثواني — إذا رديت أنت يلغي رده.</div>
      <div class="msgs" id="ms" aria-live="polite"></div>
      <div class="composer" style="position:relative"><div class="sugs" id="sg"></div><div class="slash" id="sl" hidden></div>
       <div class="bar"><textarea id="tx" rows="1" placeholder="اكتب ردك هنا… (اكتب / للردود الجاهزة)" aria-label="نص الرد"></textarea><button class="btn primary" id="sd"><svg aria-hidden="true"><use href="#i-send"/></svg>إرسال</button></div></div>`;
     $('#cst').value = c.crm.status || 'open'; $('#cst').onchange = () => saveCRM({ status: $('#cst').value }).then(() => { toast('تم تحديث الحالة'); loadChats() });
-    $('#pt').onclick = () => $('#cw').classList.toggle(innerWidth < 1200 ? 'panel' : 'nopanel');
+    $('#pt').onclick = () => $('#cw').classList.toggle('panel'); $('#tbk').onclick = () => $('#cw').classList.remove('open-th', 'panel');
+    $('#cw').classList.add('open-th');
+    if (PRETEXT?.jid === CH) { $('#tx').value = PRETEXT.text; PRETEXT = null; $('#tx').focus(); toast('الرسالة جاهزة — راجعها واضغط «إرسال»') }
     $('#tx').oninput = () => { slash(); const t = $('#tx'); t.style.height = 'auto'; t.style.height = Math.min(160, t.scrollHeight + 2) + 'px' };
     $('#tx').onkeydown = e => { const sl = $('#sl'); if (!sl.hidden && e.key === 'Enter') { e.preventDefault(); sl.querySelector('[data-i]')?.click() } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() };
     $('#sd').onclick = send; drawSugs(); drawPanel(c); suggest();
@@ -308,7 +315,7 @@ async function drawThread(full) {
     return sep + `<div class="m ${m.fromMe ? 'me' : 'them'} ${m.auto ? 'auto' : ''}">${m.auto ? '<span class="who"><svg aria-hidden="true"><use href="#i-bot"/></svg>رد الموظف</span>\n' : ''}${m.media ? MEDIA(m) : ''}${m.media && /^\[(صورة|فيديو|رسالة صوتية|ملصق|ملف)\]$/.test(m.text) ? '' : esc(m.text)}<time>${fmtT(m.ts)}</time></div>` }).join('') : '<div class="empty">ما فيه رسائل</div>';
   ms.scrollTop = ms.scrollHeight; if (!full) suggest();
 }
-let SUG = [], PREFILL = null;
+let SUG = [], PREFILL = null, PRETEXT = null;
 function drawSugs() {
   const t = (SET.templates || []).map((x, i) => `<button class="sug tpl" data-t="${i}" title="${esc(x.t)}">${esc(x.k)}</button>`).join('');
   const s = SUG.map((r, i) => `<button class="sug" data-s="${i}" title="${esc(r)}">${nice(r)}</button>`).join('');
@@ -332,7 +339,7 @@ async function send() {
 async function saveCRM(data) { CRM[CH] = await api('api/crm', { jid: CH, data }); return CRM[CH] }
 function drawPanel(c) {
   const cr = c.crm || {}, sp = $('#sp'); let tag = cr.tag || 'جديد', ORD = [...(cr.orders || [])];
-  sp.innerHTML = `<h3 style="display:flex;align-items:center">ملف العميل<button class="icon-btn" id="cpx" aria-label="إغلاق ملف العميل" style="margin-inline-start:auto"><svg><use href="#i-x"/></svg></button></h3>
+  sp.innerHTML = `<h3 style="display:flex;align-items:center">معلومات العميل<button class="icon-btn" id="cpx" aria-label="إغلاق" style="margin-inline-start:auto"><svg><use href="#i-x"/></svg></button></h3>
   <div id="pf" class="profile"><div class="skel"></div><div class="skel" style="width:70%"></div></div>
   <label class="lbl">التصنيف</label><div class="filters" id="tg">${(SET.tags || []).map(t => `<button class="${tag === t ? 'on' : ''}" data-t="${esc(t)}" aria-pressed="${tag === t}">${esc(t)}</button>`).join('')}</div>
   <label class="lbl" for="fu">موعد متابعة</label><input type="date" id="fu" value="${esc(cr.followUp || '')}">
@@ -347,7 +354,7 @@ function drawPanel(c) {
   const drawO = () => { $('#od').innerHTML = ORD.length ? ORD.map((o, i) => `<div class="order"><div class="grow"><b class="ell" style="display:block">${esc(o.item)}</b><small class="muted">${money(o.amount)}${o.deliveryDate ? ' · ' + fdate(o.deliveryDate) : ''}</small></div>
     <select data-i="${i}" aria-label="حالة الطلب" style="width:auto;min-height:36px">${STAGES.map(x => `<option ${(o.status || 'جديد') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('') : '<p class="muted" style="font-size:14px">ما فيه طلبات مسجّلة</p>';
     $('#od').querySelectorAll('select').forEach(s => s.onchange = () => ORD[s.dataset.i].status = s.value) }; drawO();
-  $('#cpx').onclick = () => { const w = $('#cw'); if (innerWidth < 1200) w.classList.remove('panel'); else w.classList.add('nopanel') };
+  $('#cpx').onclick = () => $('#cw').classList.remove('panel');
   $('#tg').querySelectorAll('button').forEach(b => b.onclick = () => { tag = b.dataset.t; $('#tg').querySelectorAll('button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b) }) });
   $('#oad').onclick = () => { const it = $('#oi').value.trim(); if (!it) { $('#oi').focus(); return toast('اكتب الطلب أول') } ORD.push({ item: it, amount: +$('#oa').value || 0, deliveryDate: $('#odd').value, status: 'جديد', date: Date.now() }); $('#oi').value = $('#oa').value = $('#odd').value = ''; drawO() };
   $('#sv').onclick = async () => { try { await saveCRM({ tag, followUp: $('#fu').value, note: $('#nt').value, orders: ORD }); toast('انحفظ ✓'); loadChats() } catch (x) { toast('تعذّر الحفظ') } };
@@ -395,31 +402,29 @@ async function renderSales() {
   $('#org').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = 'نرتّب…'; try { ST.analysis = await api('api/analyze', {}); renderSales() } catch { toast('تعذّر الترتيب'); b.disabled = false; b.textContent = 'رتّب الحين' } };
 }
 // ---------- MARKETING
-function renderMkt() {
-  const el = $('#p-mkt'), tagOpts = `<option value="">كل العملاء</option>${(SET.tags || []).map(t => `<option>${esc(t)}</option>`).join('')}`;
-  el.innerHTML = `<div class="page-h"><div><h1>التسويق</h1><p>حملات جاهزة بلهجتنا. كلها مسودات — الإرسال بيدك.</p></div></div>
-  <div class="grid g2"><div class="card"><h3><svg aria-hidden="true"><use href="#i-spark"/></svg>حملة مناسبة</h3>
-   <label class="lbl" for="oc">المناسبة</label><select id="oc">${OCCS.map(o => `<option>${esc(o)}</option>`).join('')}<option value="_">مناسبة ثانية…</option></select><input id="oc2" placeholder="اكتب المناسبة" aria-label="اسم المناسبة" hidden style="margin-top:8px">
-   <label class="lbl" for="ot">الجمهور</label><select id="ot">${tagOpts}</select>
-   <label class="lbl" for="of">عرض تبي تقدمه (اختياري)</label><input id="of" placeholder="مثلاً: توصيل مجاني فوق ٢٠٠ ريال">
-   <button class="btn primary" id="gen" style="margin-top:16px">اكتب الحملة</button><div id="cmp" style="margin-top:12px"></div></div>
-  <div class="card"><h3>رسالة جماعية (مسودة)</h3><p class="muted" style="font-size:14px;margin-top:-6px">لكل عميل زر يفتح محادثته في واتساب والنص جاهز، وأنت تضغط إرسال.</p>
-   <label class="lbl" for="bt">للتصنيف</label><select id="bt">${tagOpts}</select>
-   <label class="lbl" for="bx">النص</label><textarea id="bx" placeholder="هلا {الاسم}…"></textarea><p class="help-t">اكتب {الاسم} ويتبدل باسم كل عميل.</p>
-   <button class="btn" id="bg" style="margin-top:10px">جهّز القائمة</button><div id="bo" style="margin-top:12px"></div></div>
-  <div class="card" style="grid-column:1/-1"><h3>رجّع العملاء القدامى<button class="btn sm soft act" id="re">طلّع القائمة</button></h3><div id="ro"><p class="muted">عملاء ما تواصلوا من أكثر من ${num(SET.dormantDays)} يوم — نجهز لهم رسالة ترجعهم.</p></div></div></div>`;
-  $('#oc').onchange = () => $('#oc2').hidden = $('#oc').value !== '_';
-  $('#gen').onclick = async () => { $('#cmp').innerHTML = '<div class="skel"></div>';
-    try { const j = await api('api/ai/campaign', { occasion: $('#oc').value === '_' ? $('#oc2').value : $('#oc').value, tag: $('#ot').value, offer: $('#of').value }); const all = [j.message, ...(j.variants || [])];
-      $('#cmp').innerHTML = `<div class="notice g"><b>${esc(j.idea)}</b><div style="font-size:14px">العرض: ${esc(j.offer)} · أفضل وقت: ${esc(j.timing)}</div></div>${all.map((m, i) => `<pre class="draft">${esc(m)}</pre><button class="btn sm" data-m="${i}" style="margin-top:6px">استخدمها كمسودة</button>`).join('')}<ul style="margin:12px 0 0;padding-inline-start:20px">${j.tips.map(t => `<li class="muted" style="font-size:14px">${esc(t)}</li>`).join('')}</ul>`;
-      $('#cmp').querySelectorAll('[data-m]').forEach(b => b.onclick = () => { $('#bx').value = all[b.dataset.m]; $('#bt').value = $('#ot').value; $('#bx').focus(); toast('انحطت في الرسالة الجماعية') }) }
-    catch { $('#cmp').innerHTML = '<p class="err">تعذّر كتابة الحملة</p>' } };
-  $('#bg').onclick = async () => { const t = $('#bx').value.trim(); if (!t) { $('#bx').focus(); return toast('اكتب النص أول') } await loadChats(); const l = CL.filter(c => !$('#bt').value || c.tag === $('#bt').value).filter(c => /^\d{8,15}$/.test(c.phone));
-    $('#bo').innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b class="grow">${num(l.length)} مستلم</b><button class="btn sm" id="cp">نسخ القائمة</button></div>` + l.slice(0, 300).map(c => `<div class="row" style="cursor:default"><div class="grow ell">${esc(who(c))}</div><a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/${esc(c.phone)}?text=${encodeURIComponent(t.replaceAll('{الاسم}', c.name || ''))}">افتح في واتساب</a></div>`).join('');
-    $('#cp').onclick = () => navigator.clipboard.writeText(t + '\n\n' + l.map(c => who(c) + (c.disp && c.name ? ' ' + c.disp : '')).join('\n')).then(() => toast('انسخت'), () => toast('تعذّر النسخ')) };
-  $('#re').onclick = async e => { const b = e.currentTarget; b.disabled = true; try { const j = await api('api/ai/reengage', {});
-    $('#ro').innerHTML = `<pre class="draft">${esc(j.message)}</pre><button class="btn sm" id="ru" style="margin:8px 0">استخدمها كمسودة</button>` + (j.list.length ? j.list.map(c => `<div class="row" data-j="${esc(c.jid)}" tabindex="0"><div class="av">${ini(c.name)}</div><div class="grow"><b>${esc(c.name)}</b><div><small class="muted">آخر تواصل قبل ${num(c.days)} يوم${c.bought ? ' · اشترى قبل' : ''}</small></div></div></div>`).join('') : '<div class="empty"><b>ما فيه عملاء خاملين</b>كل عملائك تواصلوا مؤخراً.</div>');
-    $('#ru').onclick = () => { $('#bx').value = j.message; $('#bx').focus() }; $('#ro').querySelectorAll('.row').forEach(r => r.onclick = () => openChat(r.dataset.j)) } catch { toast('تعذّر') } b.disabled = false };
+// ---------- MARKETING (v2.3): a few ranked, ready actions. Every message is a draft the owner opens and sends himself.
+let MKT = null, MKTD = {};
+async function renderMkt() {
+  const el = $('#p-mkt');
+  el.innerHTML = `<div class="page-h"><div><h1>التسويق</h1><p>أهم الخطوات اليوم، مرتبة من الأقوى. الرسالة جاهزة، وأنت تفتح المحادثة وترسل بنفسك.</p></div></div><div id="mk"><div class="skel" style="height:160px"></div><div class="skel" style="height:160px"></div></div>`;
+  try { MKT = await api('api/mkt/actions') } catch { $('#mk').innerHTML = errBox('ما قدرنا نجهز التسويق', renderMkt); return }
+  const left = Math.max(0, MKT.cap - MKT.opened);
+  $('#mk').innerHTML = `<div class="mk-cap"><svg aria-hidden="true"><use href="#i-check"/></svg><span>عشان رقمك يبقى بأمان: أرسل لـ ${num(MKT.cap)} عميل بالكثير باليوم، وحدة وحدة. باقي لك اليوم <b>${num(left)}</b>.</span></div>
+   <ol class="mk-list">${MKT.actions.map((a, i) => `<li class="mk ${i === 0 ? 'top' : ''}" data-id="${a.id}"><div class="mk-h"><span class="mk-n">${num(i + 1)}</span><div class="grow"><h3>${esc(a.title)}</h3><p>${esc(a.why)}</p></div></div>
+     <div class="mk-draft"><textarea data-t="${a.id}" rows="3" aria-label="نص الرسالة">${esc(MKTD[a.id] || a.template)}</textarea>
+      <div class="mk-act"><button class="btn sm soft" data-ai="${a.id}"><svg aria-hidden="true"><use href="#i-spark"/></svg>اكتبها بالذكاء</button><button class="btn sm ghost" data-cp="${a.id}">نسخ</button>${a.status ? '<span class="muted">انسخها وحطها في حالتك مع صورة ورد اليوم</span>' : `<span class="muted">${num(a.people.length)} عميل</span>`}</div></div>
+     ${a.people.length ? `<div class="mk-people">${a.people.slice(0, i === 0 ? 8 : 4).map(p => `<button class="mk-p" data-open="${esc(p.jid)}" data-a="${a.id}"><span class="av" style="--h:${hue(p.jid)}">${ini(p.label)}</span><span class="grow ell">${esc(p.label)}${p.item ? `<small>${esc(p.item)}</small>` : ''}</span><span class="go">افتح وأرسل</span></button>`).join('')}${a.people.length > (i === 0 ? 8 : 4) ? `<button class="btn sm ghost mk-more" data-more="${a.id}">اعرض الباقين (${num(a.people.length - (i === 0 ? 8 : 4))})</button>` : ''}</div>` : ''}</li>`).join('')}</ol>`;
+  const txt = id => $(`[data-t="${id}"]`).value;
+  $$('[data-t]').forEach(t => t.oninput = () => MKTD[t.dataset.t] = t.value);
+  $$('[data-cp]').forEach(b => b.onclick = () => navigator.clipboard.writeText(txt(b.dataset.cp).replace(/\{الاسم\}\s*/g, '')).then(() => toast('انسخت ✓'), () => toast('ما قدرنا ننسخ')));
+  $$('[data-ai]').forEach(b => b.onclick = async () => { const a = MKT.actions.find(x => x.id === b.dataset.ai); b.disabled = true; const o = b.innerHTML; b.textContent = 'يكتب…';
+    try { const r = await api('api/mkt/draft', { goal: a.goal, template: txt(a.id) }); MKTD[a.id] = r.text; $(`[data-t="${a.id}"]`).value = r.text; toast(r.engine === 'ai' ? 'كتبها الذكاء المحلي — عدّلها براحتك' : 'الذكاء مو متاح الحين، خليناها مثل ما هي') } catch { toast('ما ضبط') } b.disabled = false; b.innerHTML = o });
+  $$('[data-more]').forEach(b => b.onclick = () => { const a = MKT.actions.find(x => x.id === b.dataset.more); const box = b.parentElement; b.remove();
+    box.insertAdjacentHTML('beforeend', a.people.slice(box.querySelectorAll('.mk-p').length).map(p => `<button class="mk-p" data-open="${esc(p.jid)}" data-a="${a.id}"><span class="av" style="--h:${hue(p.jid)}">${ini(p.label)}</span><span class="grow ell">${esc(p.label)}</span><span class="go">افتح وأرسل</span></button>`).join('')); bindOpen() });
+  const bindOpen = () => $$('.mk-p').forEach(b => b.onclick = async () => { if (MKT.opened >= MKT.cap) return toast('وصلت حد اليوم — كمل بكرة عشان رقمك يبقى بأمان');
+    const p = MKT.actions.find(x => x.id === b.dataset.a).people.find(x => x.jid === b.dataset.open); PRETEXT = { jid: p.jid, text: txt(b.dataset.a).replace(/\{الاسم\}/g, p.first || '').replace(/هلا\s+،/, 'هلا،') };
+    try { const r = await api('api/mkt/opened', { jid: p.jid }); MKT.opened = r.opened } catch { } openChat(p.jid) });
+  bindOpen();
 }
 // ---------- EMPLOYEE (auto-reply)
 const AUDIT_AR = { manual_send: 'إرسال منك', auto_reply: 'رد الموظف', auto_handoff: 'الموظف حوّله لك', auto_skip: 'الموظف ما رد', auto_reply_failed: 'فشل رد الموظف', auto_reply_enabled: 'تشغيل الموظف', auto_reply_disabled: 'إيقاف الموظف',
@@ -468,11 +473,12 @@ async function renderEmp() {
 }
 // ---------- SETTINGS
 let SETTAB = 'shop';
-const SETTABS = [['shop', 'المحل'], ['prices', 'الأسعار والمنتجات'], ['tpl', 'الردود الجاهزة'], ['brain', 'المساعد'], ['rules', 'المتابعة والتنبيهات'], ['brand', 'الشكل والهوية'], ['sec', 'القفل والأمان'], ['log', 'السجل'], ['wa', 'الواتساب'], ['about', 'عن البرنامج']];
+const SETTABS = [['teach', 'تعليم الموظف'], ['shop', 'المحل'], ['prices', 'الأسعار والمنتجات'], ['tpl', 'الردود الجاهزة'], ['brain', 'المساعد'], ['rules', 'المتابعة والتنبيهات'], ['brand', 'الشكل والهوية'], ['sec', 'القفل والأمان'], ['log', 'السجل'], ['wa', 'الواتساب'], ['about', 'عن البرنامج']];
 async function renderSet() {
   const el = $('#p-set'), s = SET; let logo = s.logo, brandC = s.brand, T = (s.templates || []).map(x => ({ ...x })), P = (s.products || []).map(x => ({ ...x }));
   const sw = (id, v, l, h) => `<div class="setrow"><div class="grow"><b>${l}</b>${h ? `<div class="help-t">${h}</div>` : ''}</div><label class="switch"><input type="checkbox" id="${id}" ${v ? 'checked' : ''} aria-label="${esc(l)}"><span></span></label></div>`;
   const body = {
+    teach: '<div id="teachbox"></div>',
     shop: `<h3>بيانات المحل</h3><label class="lbl" for="s1">اسم المحل</label><input id="s1" value="${esc(s.shopName)}"><div class="grid g2" style="gap:12px"><div><label class="lbl" for="s2">النشاط</label><input id="s2" value="${esc(s.shopType)}"></div><div><label class="lbl" for="s3">المدينة</label><input id="s3" value="${esc(s.city)}"></div></div>
      <div class="grid g2" style="gap:12px"><div><label class="lbl" for="s6">يفتح الساعة</label><input type="time" id="s6" value="${esc(s.hoursFrom)}"></div><div><label class="lbl" for="s7">يقفل الساعة</label><input type="time" id="s7" value="${esc(s.hoursTo)}"></div></div>
      <label class="lbl" for="s4">نبذة عن المحل</label><textarea id="s4" placeholder="وش تبيعون، وش يميزكم…">${esc(s.about)}</textarea><label class="lbl" for="s5">التوصيل والدفع</label><textarea id="s5" style="min-height:72px" placeholder="مثلاً: نوصل داخل المدينة بـ ٣٠ ريال، والدفع تحويل أو مدى">${esc(s.delivery)}</textarea>`,
@@ -507,9 +513,10 @@ async function renderSet() {
      <div class="notice b" style="margin-top:12px">واتساب ما يسمح رسمياً بالبرامج غير الرسمية. البرنامج يقلل الخطر (ما يرسل إلا بموافقتك أو للي كتب لك، وبوقت طبيعي)، لكن الخطر ما يصير صفر.</div></div>`,
   }[SETTAB];
   el.innerHTML = `<div class="page-h"><div><h1>الإعدادات</h1></div></div><div class="setwrap"><nav class="setnav" aria-label="أقسام الإعدادات">${SETTABS.map(([k, l]) => `<button data-t="${k}" class="${SETTAB === k ? 'on' : ''}" aria-current="${SETTAB === k}">${l}</button>`).join('')}</nav>
-   <div class="card setcard">${body}${['log', 'wa', 'sec', 'about'].includes(SETTAB) ? '' : '<button class="btn primary" id="sv" style="margin-top:20px">حفظ</button>'}</div></div>`;
+   <div class="card setcard ${SETTAB === 'teach' ? 'wide' : ''}">${body}${['log', 'wa', 'sec', 'about', 'teach'].includes(SETTAB) ? '' : '<button class="btn primary" id="sv" style="margin-top:20px">حفظ</button>'}</div></div>`;
   el.querySelectorAll('.setnav [data-t]').forEach(b => b.onclick = () => { SETTAB = b.dataset.t; renderSet() });
   const v = id => $('#' + id)?.value, c = id => $('#' + id)?.checked;
+  if (SETTAB === 'teach') renderTeach($('#teachbox'));
   if (SETTAB === 'brand') { $('#lf').onchange = e => { const f = e.target.files[0]; if (!f) return; if (f.size > 200000) return toast('الصورة كبيرة (الحد ٢٠٠ كيلوبايت)'); const r = new FileReader(); r.onload = () => { logo = r.result; $('#lp').innerHTML = `<img src="${esc(logo)}" alt="">` }; r.readAsDataURL(f) };
     $$('input[name=thm]').forEach(r => r.onchange = () => applyTheme(r.value));
     $('#lr').onclick = () => { logo = ''; $('#lp').textContent = ini(s.shopName) }; $('#bc').oninput = e => { brandC = e.target.value; document.documentElement.style.setProperty('--brand', brandC); brandText() };

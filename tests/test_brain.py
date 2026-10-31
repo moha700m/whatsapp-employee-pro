@@ -73,6 +73,7 @@ def test_after_hours_safe_only():
 
 def test_saudi_calendar():
     up = upcoming_occasions(date(2026, 2, 10), 30)
-    assert up[0]["occasion"] == "يوم التأسيس" and up[0]["date"] == "2026-02-22"
+    assert [(o["occasion"], o["date"]) for o in up[:2]] == [("رمضان", "2026-02-18"), ("يوم التأسيس", "2026-02-22")]   # Hijri dates included (v2.3)
+    assert any(o["occasion"] == "عيد الفطر" and o["date"] == "2027-03-09" for o in upcoming_occasions(date(2027, 2, 20), 30))
     assert any(o["date"] == "2026-09-23" for o in upcoming_occasions(date(2026, 9, 1), 30))
     assert default_kb()["shop"]["weekend"] == ["Fri", "Sat"]

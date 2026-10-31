@@ -14,7 +14,7 @@ from app import config
 def ensure_venv():
     """If launched with another Python (e.g. double-clicking main.py with the system Python),
     re-launch with the app's own .venv interpreter so all packages are present."""
-    if os.environ.get("WAE_NO_REEXEC") or "--smoke" in sys.argv or "--qr-test" in sys.argv or any(a.startswith("--persist-test") for a in sys.argv) or getattr(sys, "frozen", False):
+    if os.environ.get("WAE_NO_REEXEC") or "--smoke" in sys.argv or "--qr-test" in sys.argv or "--ai-test" in sys.argv or any(a.startswith("--persist-test") for a in sys.argv) or getattr(sys, "frozen", False):
         return
     venv = config.BASE_DIR / ".venv"
     exe_dir = venv / ("Scripts" if os.name == "nt" else "bin")
@@ -183,7 +183,18 @@ def qr_test(limit=60):
     except Exception: pass
     return 0 if ok else 3
 
+def ai_test():
+    from app import ai_check
+    o = ai_check.run(); msg = ai_check.report(o); print(msg, flush=True)
+    try: config.LOG_DIR.mkdir(parents=True, exist_ok=True); (config.LOG_DIR / "ai-test.txt").write_text(msg, encoding="utf-8")
+    except Exception: pass
+    return 0 if o["ok"] else 4
+
 def main():
+    if "--ai-test" in sys.argv:
+        try: return ai_test()
+        except Exception:
+            startup_log("AI TEST FAILED:\n" + traceback.format_exc()); traceback.print_exc(); return 1
     if "--qr-test" in sys.argv:
         try: return qr_test()
         except Exception:

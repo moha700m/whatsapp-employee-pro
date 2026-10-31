@@ -1,11 +1,18 @@
 """Local brain HTTP service for the WhatsApp engine (127.0.0.1 only, shared-key protected).
 Free and offline: rules + Saudi knowledge base. No model downloads, no network calls."""
-import json, random, threading, hmac, re
+import json, os, random, threading, hmac, re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import date, timedelta
 from app.brain.engine import Brain, think, SAFE_AUTO
 from app.brain.knowledge import default_kb, upcoming_occasions
 from app.brain.normalize import norm
+from app.brain import ai as AI
+from app.brain.llm import LocalLLM
+
+LLM = None   # created lazily by BrainServer (one per app)
+def llm_on(body):
+    """AI is used only if the owner left it on, the model files exist, RAM ≥ 6 GB and it has not been failing."""
+    return LLM is not None and body.get("ai") is True and LLM.available()[0]
 
 AR_DAYS = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
 AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
@@ -29,7 +36,7 @@ HANDOFF_KINDS = {"handoff", "order_confirm", "order_collect", "price", "price_un
 def make_kb(body):
     kb = default_kb()
     shop = body.get("shop") or {}
-    for k in ("name", "location", "hours", "city"):
+    for k in ("name", "location", "hours", "city", "delivery", "about"):
         if isinstance(shop.get(k), str) and shop[k].strip(): kb["shop"][k] = shop[k].strip()
     prods = body.get("products")
     if isinstance(prods, list) and prods:
@@ -47,10 +54,21 @@ def incoming(messages, n=8):
     return [m.get("text", "") for m in (messages or []) if not m.get("fromMe") and m.get("text")][-n:]
 
 def do_think(body):
-    kb = make_kb(body)
-    r = think(str(body.get("text", ""))[:2000], str(body.get("customer", ""))[:60], kb=kb, after_hours=bool(body.get("after_hours")))
+    kb = make_kb(body); text = str(body.get("text", ""))[:2000]; teach = body.get("teach") or {}
+    r = think(text, str(body.get("customer", ""))[:60], kb=kb, after_hours=bool(body.get("after_hours")))
     r["reply"] = humanize(r["reply"])
     r["handoff"] = r["kind"] in HANDOFF_KINDS or bool({"order", "price", "complaint", "human", "stop"} & set(r["intents"]))
+    h = AI.handoff_hit(teach, text)
+    if h: r["handoff"] = True; r["handoff_reason"] = h
+    fa = AI.faq_answer(teach, text)
+    if fa and not r["handoff"]: r["reply"], r["kind"], r["safe_auto"] = fa, "faq", True
+    r["engine"] = "rules"
+    if fa or r["kind"] in ("stop",) or not llm_on(body): return r
+    try:
+        out, issues = AI.ai_reply(LLM, Brain(kb=kb), kb, teach, text, AI.history_msgs([m for m in (body.get("messages") or []) if m.get("text") != text][-4:]), rule_reply=r["reply"])
+        if not issues: r["reply"], r["engine"] = out, "ai"
+        else: r["ai_rejected"] = issues
+    except Exception as e: r["ai_error"] = str(e)[:120]
     return r
 
 def do_suggest(body):
@@ -64,7 +82,14 @@ def do_suggest(body):
         if len(out) >= 3: break
     r = think(text, str(body.get("customer", "")), kb=kb, rng=random.Random(0))
     if r["upsell"] and len(out) < 4: out.append(f"وتقدر تضيف {r['upsell'][0]} يكمّل الهدية 🌷")
-    return {"replies": out[:4], "intents": r["intents"], "missing": r["missing"], "score": r["lead_score"]}
+    teach = body.get("teach") or {}; fa = AI.faq_answer(teach, texts[-1]); engine = "rules"
+    if fa: out.insert(0, fa)
+    elif llm_on(body):
+        try:
+            a, issues = AI.ai_reply(LLM, Brain(kb=kb), kb, teach, texts[-1], AI.history_msgs(body.get("messages"), 6), rule_reply=out[0] if out else "")
+            if not issues and a not in out: out.insert(0, a); engine = "ai"
+        except Exception: pass
+    return {"replies": out[:4], "intents": r["intents"], "missing": r["missing"], "score": r["lead_score"], "engine": engine}
 
 def do_extract(body):
     kb = make_kb(body); b = Brain(kb=kb, rng=random.Random(0)); texts = incoming(body.get("messages"), 20)
@@ -91,8 +116,24 @@ def do_extract(body):
     if objections: reasons.append("متردد")
     if "complaint" in intents: reasons.append("عنده شكوى")
     summ = "، ".join(x for x in [", ".join(ents.get("items", [])), ents.get("occasion", ""), ents.get("date", ""), ents.get("district", "")] if x)
-    return {"orders": orders, "stage": stage, "score": score, "temperature": temp, "reason": "، ".join(reasons) or "استفسار عام",
-            "summary": summ, "missing": b.missing_for_order(ents) if "order" in intents else [], "entities": ents}
+    res = {"orders": orders, "stage": stage, "score": score, "temperature": temp, "reason": "، ".join(reasons) or "استفسار عام",
+           "summary": summ, "missing": b.missing_for_order(ents) if "order" in intents else [], "entities": ents, "engine": "rules"}
+    if llm_on(body):
+        try:
+            names = [p["name"] for p in kb["products"]]
+            j = AI.ai_json(LLM, "استخرج طلب العميل من محادثة واتساب لمحل ورد. رجّع JSON فقط بالمفاتيح: items (قائمة من هذي الأسماء فقط: " + "، ".join(names[:40]) +
+                           "), quantity (رقم), date (YYYY-MM-DD أو فاضي), time (HH:MM أو فاضي), district, card (نص البطاقة), occasion, summary (جملة سعودية قصيرة عن وش يبي العميل).", "\n".join(texts[-12:]))
+            its = [i for i in (j.get("items") or []) if i in names]
+            if its and not orders:
+                e2 = {**ents, "items": its, **({"quantity": int(j["quantity"])} if str(j.get("quantity", "")).isdigit() else {})}
+                orders.append({"item": (f"{e2['quantity']} × " if e2.get("quantity") else "") + "، ".join(its), "amount": b.total(e2) or 0,
+                               "deliveryDate": ents.get("date") or (j.get("date") if re.match(r"^\d{4}-\d\d-\d\d$", str(j.get("date", ""))) else ""),
+                               "time": ents.get("time") or (j.get("time") if re.match(r"^\d\d:\d\d$", str(j.get("time", ""))) else ""),
+                               "address": ents.get("district") or str(j.get("district") or "")[:60], "occasion": ents.get("occasion") or str(j.get("occasion") or "")[:30], "card": str(j.get("card") or "")[:120]})
+            if isinstance(j.get("summary"), str) and AI.AR.search(j["summary"]): res["summary"] = j["summary"][:160]
+            res["engine"] = "ai"
+        except Exception: pass
+    return res
 
 POS = ["شكرا", "تسلم", "يعطيك العافيه", "حلو", "روعه", "جميل", "ممتاز", "الله يسعدك", "تجنن", "عجبني", "عجبها", "مشكور", "❤", "😍", "🌹"]
 NEG = ["سيء", "زعلان", "متاخر", "تاخر", "ما وصل", "ذابل", "ذبلان", "غالي", "مو حلو", "خربان", "مو نفس", "استرجاع", "😡", "😠"]
@@ -145,7 +186,14 @@ def do_profile(body):
             m_, d_ = map(int, od.split("-")); nd = date(today.year, m_, d_)
             if nd < today: nd = date(today.year + 1, m_, d_)
             if (nd - today).days <= 60: follow = min(follow, (nd - timedelta(days=5)).isoformat()) if nd - timedelta(days=5) > today else follow
-    return {"name": name, "district": ents.get("district", ""), "city": ents.get("city", ""), "location": ents.get("location_link", ""),
+    ai_note = ""
+    if body.get("deep") and llm_on(body):
+        try:
+            j = AI.ai_json(LLM, "أنت مساعد مبيعات لمحل ورد سعودي. اقرأ رسائل العميل ورجّع JSON فقط: {\"summary\": جملة سعودية قصيرة تلخص العميل ووش يبي, \"next\": أفضل خطوة جاية لصاحب المحل بجملة قصيرة}.", "\n".join(inc[-15:]), 140)
+            if isinstance(j.get("next"), str) and AI.AR.search(j["next"]) and not AI.guard(b, j["next"], body.get("teach")): nba = j["next"][:120]
+            if isinstance(j.get("summary"), str) and AI.AR.search(j["summary"]): ai_note = j["summary"][:160]
+        except Exception: pass
+    return {"summary": ai_note, "name": name, "district": ents.get("district", ""), "city": ents.get("city", ""), "location": ents.get("location_link", ""),
             "occasions": occs, "items": items[:8], "budget": budget, "amounts": amounts[-5:], "orders": len(orders), "spent": spent,
             "value": value, "potential": potential, "sentiment": sentiment, "score": score, "temperature": temp,
             "nextAction": nba, "followUp": follow, "intents": sorted(intents - {"unknown"})}
@@ -158,6 +206,44 @@ def do_insight(body):
     val = b.total(e) or max([b.price_of(i) or 0 for i in e.get("items", [])] or [0]) or e.get("amount") or 0
     return {"intents": it, "items": e.get("items", []), "occasion": e.get("occasion"), "value": val, "objections": b.objections(t)}
 
+def do_plan_text(body):
+    """2 short Saudi sentences that open the daily plan (AI if on, otherwise a simple rule sentence)."""
+    items = [str(x)[:120] for x in (body.get("items") or [])][:6]
+    base = ("عندك اليوم " + str(len(items)) + " مهام، ابدأ بأولها 💪") if items else "يومك هادي، استغله في متابعة عملائك القدامى 🌷"
+    if not items or not llm_on(body): return {"text": base, "engine": "rules"}
+    try:
+        t = LLM.chat([{"role": "system", "content": "أنت مساعد سعودي لصاحب محل ورد. اكتب جملتين قصيرتين باللهجة السعودية تشجعه وتقول له وش يبدأ فيه اليوم، بدون أرقام أسعار وبدون قوائم."},
+                      {"role": "user", "content": "مهام اليوم:\n" + "\n".join(items)}], max_tokens=90, temperature=0.6)
+        t = AI.clean(t)
+        if AI.AR.search(t) and not re.search(r"\d{3,}", t): return {"text": t, "engine": "ai"}
+    except Exception: pass
+    return {"text": base, "engine": "rules"}
+
+def do_mkt_draft(body):
+    """Saudi WhatsApp marketing draft (one short message with {الاسم}); AI if on, else the template the caller sent. Never sends anything."""
+    base = str(body.get("template", ""))[:500]; goal = str(body.get("goal", ""))[:200]
+    if not llm_on(body): return {"text": base, "engine": "rules"}
+    kb = make_kb(body); teach = body.get("teach") or {}
+    try:
+        t = LLM.chat([{"role": "system", "content": "أنت تكتب رسائل واتساب قصيرة لمحل ورد سعودي باللهجة السعودية العامية. رسالة وحدة، سطرين أو ثلاثة، تبدأ بـ «هلا {الاسم}»، لطيفة ومو ملحّة، "
+                                                    "وتنتهي بسؤال بسيط يخلي العميل يرد. لا تذكر أسعار. لا تستخدم الفصحى. اكتب الرسالة فقط."},
+                      {"role": "user", "content": f"الهدف: {goal}\nاسم المحل: {kb['shop'].get('name','')}\nمسودة تقدر تحسنها:\n{base}"}], max_tokens=110, temperature=0.6)
+        t = AI.clean(t)
+        if "{الاسم}" not in t: t = re.sub(r"^(هلا|مرحبا|اهلا|أهلا)[^،,\n]*[،,]?", "هلا {الاسم}،", t, count=1) if re.match(r"^(هلا|مرحبا|اهلا|أهلا)", t) else "هلا {الاسم}، " + t
+        if not AI.guard(Brain(kb=kb), t, teach) and not re.search(r"\d{2,}", t) and len(t) < 300: return {"text": t, "engine": "ai"}
+    except Exception: pass
+    return {"text": base, "engine": "rules"}
+
+def do_ai_status(body):
+    return LLM.status() if LLM else {"available": False, "reason": "غير مفعّل", "state": "unavailable"}
+
+def do_ai_try(body):
+    """«جرّب» box in تعليم الموظف: what would it reply right now (rules + AI), with timing. Sends nothing."""
+    import time as _t
+    t0 = _t.time(); r = do_think({**body, "ai": body.get("ai") is True})
+    return {"reply": r["reply"], "engine": r.get("engine"), "handoff": r.get("handoff"), "kind": r.get("kind"), "ms": int((_t.time() - t0) * 1000),
+            "rejected": r.get("ai_rejected"), "error": r.get("ai_error"), "intents": r.get("intents")}
+
 def do_occasions(body):
     return {"list": upcoming_occasions(days=int(body.get("days") or 30), kb=make_kb(body))}
 
@@ -165,10 +251,12 @@ def do_kb(_):
     kb = default_kb()
     return {"products": [{k: p.get(k) for k in ("name", "aliases", "price", "unit", "category")} for p in kb["products"]], "shop": kb["shop"]}
 
-ROUTES = {"/think": do_think, "/suggest": do_suggest, "/extract": do_extract, "/kb": do_kb, "/profile": do_profile, "/insight": do_insight, "/occasions": do_occasions}
+ROUTES = {"/think": do_think, "/suggest": do_suggest, "/extract": do_extract, "/kb": do_kb, "/profile": do_profile, "/insight": do_insight, "/occasions": do_occasions, "/plan_text": do_plan_text, "/ai/status": do_ai_status, "/ai/try": do_ai_try, "/mkt_draft": do_mkt_draft, "/teach_defaults": lambda b: AI.DEFAULT_TEACH}
 
 class BrainServer:
-    def __init__(self, key, port=0):
+    def __init__(self, key, port=0, llm=True):
+        global LLM
+        if llm and LLM is None and os.environ.get("WAE_NO_LLM") != "1": LLM = LocalLLM()
         self.key = key
         outer = self
         class H(BaseHTTPRequestHandler):
@@ -194,6 +282,7 @@ class BrainServer:
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="brain").start(); return self.url
     def stop(self):
         self.httpd.shutdown(); self.httpd.server_close()
+        if LLM: LLM.stop()
 
 if __name__ == "__main__":   # dev: python -m app.brain_server KEY PORT
     import sys

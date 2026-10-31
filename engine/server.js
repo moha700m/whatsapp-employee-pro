@@ -15,7 +15,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1', FAKE_FAST = FAKE && process.env.HUMAN_TYPING !== '1';
-const VERSION = process.env.APP_VERSION || '2.2.1';
+const VERSION = process.env.APP_VERSION || '2.3.0';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------
@@ -43,7 +43,7 @@ const DEF = {
   templates: [{ k: 'ترحيب', t: 'هلا والله، نورتنا 🌷 كيف أقدر أخدمك؟' }, { k: 'أسعار', t: 'أسعار الباقات تبدأ من ١٥٠ ريال، تحب أرسل لك صور الخيارات؟' },
     { k: 'تأكيد', t: 'تم تأكيد طلبك ✅ وموعد التوصيل …' }, { k: 'شكر', t: 'شكراً لثقتك فينا، نتشرف بخدمتك دايم 🌹' }],
   tags: ['جديد', 'مهتم', 'طلب', 'تم التوصيل', 'مميز'], followUpDays: 1, dormantDays: 30, hotScore: 60, notifyHot: true, notifyNew: true,
-  aiEnabled: true, aiTone: 'ودودة ومحترفة', sessionMinutes: 120, tourDone: false, hintsOff: [], theme: 'auto',
+  aiEnabled: true, aiModel: 'auto', teach: null, aiTone: 'ودودة ومحترفة', sessionMinutes: 120, tourDone: false, hintsOff: [], theme: 'auto',
   autoReply: { ...AUTO_DEFAULTS },
 };
 store.settings = { ...DEF, ...(store.settings || {}), autoReply: { ...AUTO_DEFAULTS, ...(store.settings?.autoReply || {}) } };
@@ -87,6 +87,11 @@ function txt(m) {
   const x = unwrap(m.message);
   return x.conversation || x.extendedTextMessage?.text || x.imageMessage?.caption || x.videoMessage?.caption || x.documentMessage?.caption ||
     (x.imageMessage ? '[صورة]' : x.audioMessage ? '[رسالة صوتية]' : x.locationMessage ? '[موقع]' : x.documentMessage ? '[ملف]' : x.stickerMessage ? '[ملصق]' : x.videoMessage ? '[فيديو]' : x.contactMessage ? '[جهة اتصال]' : '');
+}
+// WhatsApp timestamps arrive as number, numeric string, or protobuf Long {low, high}; seconds → ms
+function tsMs(v) {
+  if (v == null) return 0; if (typeof v === 'object') { if (typeof v.toNumber === 'function') v = v.toNumber(); else if ('low' in v) v = (v.high >>> 0) * 4294967296 + (v.low >>> 0); else v = +v }
+  v = Number(v); if (!Number.isFinite(v) || v <= 0) return 0; return v < 1e12 ? v * 1000 : v;
 }
 // ---------------- media (images, video, voice notes, stickers, documents) ----------------
 // The message's media keys are kept in DATA_DIR/media/idx/<id>.json; the file itself is fetched only when the owner opens it,
@@ -133,7 +138,7 @@ function addMsg(m) {
   const t = txt(m); if (!t) return null; const c = chat(j);
   if (c.messages.some(x => x.id === m.key.id)) return null;
   const media = mediaOf(m);
-  const msg = { id: m.key.id, ...(m.key.remoteJid !== j ? { rjid: m.key.remoteJid } : {}), fromMe: !!m.key.fromMe, ts: Number(m.messageTimestamp || Date.now() / 1000) * 1000, text: t, ...(media ? { media } : {}) };
+  const msg = { id: m.key.id, ...(m.key.remoteJid !== j ? { rjid: m.key.remoteJid } : {}), fromMe: !!m.key.fromMe, ts: tsMs(m.messageTimestamp) || Date.now(), text: t, ...(media ? { media } : {}) };
   c.messages.push(msg); if (c.messages.length > 2000) c.messages.splice(0, c.messages.length - 2000);
   if (!m.key.fromMe && m.pushName && !c.name) c.name = m.pushName; if (msg.ts > (c.t || 0)) c.t = msg.ts; return { c, msg };
 }
@@ -146,12 +151,14 @@ function addContact(c) {
 
 // ---------------- local brain (Python service) ----------------
 let brainOk = false;
-async function brain(route, body) {
+// opt.ai → the brain may use the bundled local model (only if the owner left «الذكاء المحلي» on); those calls can take seconds
+const aiOn = () => S().aiModel !== 'off';
+async function brain(route, body, opt = {}) {
   if (!BRAIN_URL || !S().aiEnabled) return null;
-  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 5000);
+  const ai = !!opt.ai && aiOn(); const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), opt.timeout || (ai ? 90e3 : 5000));
   try {
     const r = await fetch(BRAIN_URL + route, { method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json', 'x-brain-key': BRAIN_KEY },
-      body: JSON.stringify({ ...body, shop: { name: S().shopName, location: S().city, city: S().city, hours: `${S().hoursFrom} - ${S().hoursTo}` }, products: S().products }) });
+      body: JSON.stringify({ teach: S().teach, ...body, ai, shop: { name: S().shopName, location: S().city, city: S().city, hours: `${S().hoursFrom} - ${S().hoursTo}`, delivery: S().delivery || '', about: S().about || '' }, products: S().products }) });
     if (!r.ok) throw new Error('brain ' + r.status); brainOk = true; return await r.json();
   } catch { brainOk = false; return null } finally { clearTimeout(to) }
 }
@@ -169,7 +176,7 @@ let state = { status: 'starting', qr: null, me: null, syncing: false, lastSync: 
 async function onIncoming(c, msg) {
   if (c.isGroup || msg.fromMe || BAD_JID(c.jid)) return;
   if (Date.now() - msg.ts > 5 * 60e3) return;
-  const b = await brain('/think', { text: msg.text, customer: c.name, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) });
+  const b = await brain('/think', { text: msg.text, customer: c.name, messages: msgsFor(c, 6), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: !!S().autoReply?.enabled });
   const sc = Math.max(keywordScore(c), b?.lead_score || 0);
   store.crm[c.jid] = { ...store.crm[c.jid], score: Math.max(sc, store.crm[c.jid]?.score || 0) };
   if (S().notifyHot && sc >= S().hotScore) alert('hot', c.jid, `عميل مهتم: ${c.label || c.name || 'عميل'} — «${msg.text.slice(0, 60)}»`);
@@ -254,13 +261,13 @@ async function connect() {
     sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
       chats?.forEach(chatPn);
       contacts?.forEach(addContact);
-      chats?.forEach(c => { if (BAD_JID(c.id)) return; const x = chat(c.id); if (c.name) x.name = c.name; const t = Number(c.conversationTimestamp || 0) * 1000; if (t > (x.t || 0)) x.t = t; x.hist = true });
+      chats?.forEach(c => { if (BAD_JID(c.id)) return; const x = chat(c.id); if (c.name) x.name = c.name; const t = tsMs(c.conversationTimestamp); if (t > (x.t || 0)) x.t = t; pinOf(x, c); x.hist = true });
       messages?.forEach(addMsg); tryLidRepo();
       state.syncing = true; state.lastSync = Date.now(); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 15e3); saveSoon();
     });
     sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { const r = addMsg(m); if (r && type === 'notify') onIncoming(resolve(r.c), r.msg) } saveSoon() });
     sock.ev.on('lid-mapping.update', x => { for (const m of [].concat(x || [])) learnLid(m.lid, m.pn) });
-    sock.ev.on('chats.upsert', cs => { (cs || []).forEach(chatPn); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(chatPn) });
+    sock.ev.on('chats.upsert', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() });
     sock.ev.on('contacts.upsert', cs => { cs.forEach(addContact); saveSoon() }); sock.ev.on('contacts.update', cs => { cs.forEach(addContact); saveSoon() });
   } catch (e) { console.log(new Date().toISOString(), 'WA start failed', e?.stack || e); state.status = 'reconnecting'; state.error = { code: null, text: diagnose(null, String(e?.message || e)), at: Date.now() }; scheduleReconnect(5000) }
   finally { connecting = false }
@@ -268,6 +275,9 @@ async function connect() {
 if (process.env.NO_WA === '1') state.status = 'connected'; else connect();
 
 // newer Baileys builds keep their own LID store — use it when present (no network calls)
+// pinned chats (WhatsApp sends `pinned` as a timestamp; 0/absent = not pinned) and newer conversation times
+function pinOf(x, c) { if ('pinned' in (c || {})) { const p = tsMs(c.pinned); if (p) x.pinned = p; else delete x.pinned } }
+function chatMeta(c) { const id = canon(c?.id); const x = id && store.chats[id]; if (!x) return; pinOf(x, c); const t = tsMs(c.conversationTimestamp); if (t > (x.t || 0)) x.t = t }
 // history-sync chat records carry the phone in pnJid / phoneNumber, or the LID in lidJid
 function chatPn(c) {
   const id = normJid(c?.id); if (!id) return; const pn = normJid(c.pnJid || c.phoneNumber), lid = normJid(c.lidJid || c.lid);
@@ -390,7 +400,7 @@ r.get('/api/state', (q, s) => {
   s.json({ status: state.status, qr: state.qr, me: state.me, error: state.error, attempts: state.attempts, waitingSec: Math.round((Date.now() - state.since) / 1000), syncing: state.syncing, lastSync: state.lastSync, version: VERSION, sim: FAKE,
     brain: brainOk || !!BRAIN_URL && S().aiEnabled, chats: cs.length, messages: cs.reduce((a, c) => a + c.messages.length, 0), analysis,
     unreadAlerts: store.alerts.filter(a => !a.read).length, now: hm(new Date(), S().tz), open: inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)),
-    employee: { enabled: !!ar.enabled, active: !!ar.enabled && scheduleOpen(ar, S(), Date.now()), schedule: ar.schedule, mode: ar.mode, pending: pending.size, guard: (() => { const l = limits({ ...AUTO_DEFAULTS, ...ar }, store.wa.linkedAt), a = store.sends.filter(x => x.auto); return { ...l, hour: a.filter(x => Date.now() - x.t < 36e5).length, day: a.length } })() }, lid: lidStats(), version: VERSION, meDisp: fmtPhone(state.me || '') });
+    employee: { enabled: !!ar.enabled, active: !!ar.enabled && scheduleOpen(ar, S(), Date.now()), schedule: ar.schedule, mode: ar.mode, pending: pending.size, guard: (() => { const l = limits({ ...AUTO_DEFAULTS, ...ar }, store.wa.linkedAt), a = store.sends.filter(x => x.auto); return { ...l, hour: a.filter(x => Date.now() - x.t < 36e5).length, day: a.length } })() }, lid: lidStats(), ai: aiStat, version: VERSION, meDisp: fmtPhone(state.me || '') });
 });
 r.post('/api/analyze', async (q, s) => { analysis = await analyze(chatsList()); fs.writeFileSync(path.join(DIR, 'analysis.json'), JSON.stringify(analysis)); s.json(analysis) });
 r.get('/report.html', (q, s) => analysis ? s.send(reportHTML(analysis, S())) : s.status(400).send('رتّب المحادثات أول'));
@@ -406,16 +416,16 @@ function chatState(c) {
 }
 r.get('/api/chats', (q, s) => s.json(chatsList().map(c => {
   const l = lastOf(c), cr = store.crm[c.jid] || {}, st = chatState(c);
-  return { jid: c.jid, name: c.name, phone: c.phone, disp: c.disp, label: c.label, hidden: c.hidden, last: l.text || '', lastAt: l.ts || c.t || 0, fromMe: !!l.fromMe, auto: !!l.auto, n: c.messages.length,
+  return { jid: c.jid, name: c.name, phone: c.phone, disp: c.disp, label: c.label, hidden: c.hidden, last: l.text || '', lastAt: Math.max(l.ts || 0, c.t || 0), pinned: c.pinned || 0, media: l.media?.type || '', fromMe: !!l.fromMe, auto: !!l.auto, n: c.messages.length,
     tag: cr.tag || 'جديد', status: cr.status || 'open', score: scoreOf(c), orders: (cr.orders || []).length, ...st };
-}).sort((a, b) => b.lastAt - a.lastAt)));
+}).sort((a, b) => (S().pinnedTop !== false ? (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.pinned || 0) - (a.pinned || 0) : 0) || b.lastAt - a.lastAt)));
 r.get('/api/media', async (q, s) => {
   try { const f = await mediaFile(q.query.id); if (!f) return s.status(404).json({ error: 'الملف ما عاد موجود على واتساب' });
     s.set('Cache-Control', 'private, max-age=31536000'); if (q.query.dl) s.set('Content-Disposition', `attachment; filename="${path.basename(f)}"`);
     s.sendFile(f) }
   catch (e) { s.status(502).json({ error: 'ما قدرنا نجيب الملف الحين، تأكد إن الجوال متصل وجرب مرة ثانية' }) }
 });
-r.get('/api/chat', async (q, s) => { const c = chatsList().find(x => x.jid === q.query.jid); if (!c) return s.json(null); const profile = q.query.profile ? await profileOf(c) : undefined; s.json({ ...c, messages: [...c.messages].sort((a, b) => a.ts - b.ts).slice(-400), crm: store.crm[c.jid] || {}, pendingAuto: pending.has(c.jid), profile, ...chatState(c) }) });
+r.get('/api/chat', async (q, s) => { const c = chatsList().find(x => x.jid === q.query.jid); if (!c) return s.json(null); const profile = q.query.profile ? await profileOf(c, true) : undefined; s.json({ ...c, messages: [...c.messages].sort((a, b) => a.ts - b.ts).slice(-400), crm: store.crm[c.jid] || {}, pendingAuto: pending.has(c.jid), profile, ...chatState(c) }) });
 r.post('/api/send', async (q, s) => {
   const { jid, text, confirm } = q.body || {};
   if (confirm !== true || !jid || !store.chats[jid] || typeof text !== 'string' || !text.trim() || text.length > 4000) return s.status(400).json({ error: 'طلب غير صالح' });
@@ -444,6 +454,23 @@ r.post('/api/orders/status', (q, s) => {
   if (!o || !['جديد', 'قيد التجهيز', 'تم التوصيل', 'ملغي'].includes(status)) return s.status(400).json({ error: 'طلب غير صالح' });
   o.status = status; saveSoon(); audit('order_status', { jid, preview: o.item + ' ← ' + status }); s.json({ ok: true });
 });
+// «تعليم الموظف»: what the owner teaches the AI (also used by the rule brain: FAQ answers, handoff and forbidden words)
+const L = (a, n, len) => (Array.isArray(a) ? a : []).map(x => String(x ?? '').trim().slice(0, len)).filter(Boolean).slice(0, n);
+const QA = (a, n) => (Array.isArray(a) ? a : []).filter(x => x && String(x.q || '').trim() && String(x.a || '').trim()).slice(0, n).map(x => ({ q: String(x.q).trim().slice(0, 300), a: String(x.a).trim().slice(0, 500) }));
+function cleanTeach(t) {
+  return { persona: String(t.persona ?? '').slice(0, 300), tone: String(t.tone ?? '').slice(0, 300), dos: L(t.dos, 30, 200), donts: L(t.donts, 30, 200),
+    faq: QA(t.faq, 60), examples: QA(t.examples, 40), forbidden: L(t.forbidden, 60, 60), handoff: L(t.handoff, 40, 80) };
+}
+let aiStat = { state: 'unknown' };
+async function refreshAi() { const j = BRAIN_URL ? await brain('/ai/status', {}) : null; if (j) aiStat = { ...j, mode: S().aiModel || 'auto' } }
+setInterval(refreshAi, 15e3).unref?.(); setTimeout(refreshAi, 1500);
+r.get('/api/ai/status', async (q, s) => { await refreshAi(); s.json(aiStat) });
+r.get('/api/teach', async (q, s) => { const d = BRAIN_URL ? await fetch(BRAIN_URL + '/teach_defaults', { method: 'POST', headers: { 'x-brain-key': BRAIN_KEY } }).then(x => x.json()).catch(() => null) : null; s.json({ current: S().teach || null, defaults: d }) });
+r.post('/api/teach/try', async (q, s) => {   // «جرّب»: reply to a sample message with the (possibly unsaved) teaching — sends nothing
+  const text = String(q.body?.text || '').slice(0, 500); if (!text.trim()) return s.status(400).json({ error: 'اكتب رسالة' });
+  const teach = q.body?.teach && typeof q.body.teach === 'object' ? cleanTeach(q.body.teach) : S().teach;
+  const j = await brain('/ai/try', { text, teach }, { ai: true }); if (!j) return s.status(503).json({ error: 'المساعد مو شغال الحين' }); s.json(j);
+});
 r.post('/api/settings', (q, s) => {
   const b = q.body || {}, cur = S(); const str = (k, n = 200) => { if (typeof b[k] === 'string') cur[k] = b[k].slice(0, n) };
   ['shopName', 'shopType', 'city', 'phone', 'aiTone', 'tz'].forEach(k => str(k, 80)); ['about', 'delivery'].forEach(k => str(k, 800));
@@ -451,12 +478,14 @@ r.post('/api/settings', (q, s) => {
   if (typeof b.logo === 'string' && (b.logo === '' || /^data:image\/(png|jpeg|webp);base64,/.test(b.logo)) && b.logo.length < 300000) cur.logo = b.logo;
   for (const k of ['hoursFrom', 'hoursTo']) if (/^\d\d:\d\d$/.test(b[k] || '')) cur[k] = b[k];
   for (const [k, lo, hi] of [['followUpDays', 0, 60], ['dormantDays', 3, 365], ['hotScore', 10, 100], ['sessionMinutes', 5, 720]]) if (b[k] !== '' && b[k] != null && Number.isFinite(+b[k])) cur[k] = Math.min(hi, Math.max(lo, +b[k]));
-  for (const k of ['notifyHot', 'notifyNew', 'aiEnabled', 'tourDone']) if (typeof b[k] === 'boolean') cur[k] = b[k];
+  for (const k of ['notifyHot', 'notifyNew', 'aiEnabled', 'tourDone', 'pinnedTop']) if (typeof b[k] === 'boolean') cur[k] = b[k];
   if (Array.isArray(b.hintsOff)) cur.hintsOff = b.hintsOff.filter(x => typeof x === 'string').slice(0, 30);
   if (Array.isArray(b.templates)) cur.templates = b.templates.filter(x => x && typeof x.t === 'string' && x.t.trim()).slice(0, 40).map(x => ({ k: String(x.k || 'رد').slice(0, 30), t: x.t.slice(0, 1000) }));
   if (Array.isArray(b.tags)) cur.tags = [...new Set(b.tags.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().slice(0, 20)))].slice(0, 15);
   if (Array.isArray(b.products)) cur.products = b.products.filter(p => p && typeof p.name === 'string' && p.name.trim()).slice(0, 200)
     .map(p => ({ name: p.name.trim().slice(0, 60), price: Math.max(0, +p.price || 0), unit: String(p.unit || 'بوكيه').slice(0, 20), category: String(p.category || 'بوكيه').slice(0, 20), aliases: (Array.isArray(p.aliases) ? p.aliases : String(p.aliases || '').split(/[،,]/)).map(a => String(a).trim()).filter(Boolean).slice(0, 10) }));
+  if (['auto', 'off'].includes(b.aiModel)) cur.aiModel = b.aiModel;
+  if (b.teach && typeof b.teach === 'object') cur.teach = cleanTeach(b.teach);
   if (b.autoReply && typeof b.autoReply === 'object') {
     const a = b.autoReply, ar = cur.autoReply, was = ar.enabled;
     if (typeof a.enabled === 'boolean') ar.enabled = a.enabled;
@@ -472,7 +501,7 @@ r.post('/api/settings', (q, s) => {
 });
 r.post('/api/employee/test', async (q, s) => {   // dry run: what would the employee answer? (sends nothing)
   const text = String(q.body?.text || '').slice(0, 500); if (!text.trim()) return s.status(400).json({ error: 'اكتب رسالة' });
-  const b = await brain('/think', { text, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) });
+  const b = await brain('/think', { text, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: true });
   const fakeChat = { jid: 'test@s.whatsapp.net', messages: [] }; const msg = { fromMe: false, text, ts: Date.now() };
   const d = decide(fakeChat, msg, { settings: { ...S(), autoReply: { ...S().autoReply, enabled: true, schedule: 'always' } }, connected: true, history: {}, brain: b });
   s.json({ ...d, brain: !!b, intents: b?.intents || [] });
@@ -499,10 +528,10 @@ r.post('/api/logout', async (q, s) => {
 // ---- brain endpoints (suggestions only — they never send)
 const getChat = jid => chatsList().find(x => x.jid === jid);
 r.get('/api/brain/products', async (q, s) => { const d = BRAIN_URL ? await fetch(BRAIN_URL + '/kb', { method: 'POST', headers: { 'x-brain-key': BRAIN_KEY } }).then(x => x.json()).catch(() => null) : null; s.json({ current: S().products, defaults: d?.products || [] }) });
-r.post('/api/ai/suggest', async (q, s) => { const c = getChat(q.body?.jid); if (!c) return s.status(404).json({ error: 'المحادثة غير موجودة' }); const j = await brain('/suggest', { messages: msgsFor(c), customer: c.name }); if (!j) return s.status(503).json({ error: 'brain_off' }); s.json(j) });
+r.post('/api/ai/suggest', async (q, s) => { const c = getChat(q.body?.jid); if (!c) return s.status(404).json({ error: 'المحادثة غير موجودة' }); const j = await brain('/suggest', { messages: msgsFor(c), customer: c.name }, { ai: true }); if (!j) return s.status(503).json({ error: 'brain_off' }); s.json(j) });
 r.post('/api/ai/extract', async (q, s) => {
   const c = getChat(q.body?.jid); if (!c) return s.status(404).json({ error: 'المحادثة غير موجودة' });
-  const j = await brain('/extract', { messages: msgsFor(c, 80), customer: c.name }); if (!j) return s.status(503).json({ error: 'brain_off' });
+  const j = await brain('/extract', { messages: msgsFor(c, 80), customer: c.name }, { ai: true }); if (!j) return s.status(503).json({ error: 'brain_off' });
   store.crm[c.jid] = { ...store.crm[c.jid], aiScore: j.score, aiReason: j.reason, aiSummary: j.summary }; saveSoon(); s.json(j);
 });
 r.post('/api/ai/score-all', async (q, s) => {
@@ -514,6 +543,7 @@ r.post('/api/ai/score-all', async (q, s) => {
 function greeting() { const h = +hm(new Date(), S().tz).slice(0, 2); return h < 4 ? 'مساء الخير' : h < 12 ? 'صباح الخير' : h < 18 ? 'مساء الخير' : 'مساء النور' }
 const PWHY = { price: 'سأل عن السعر', order: 'يبي يطلب', complaint: 'عنده شكوى', human: 'يبي يكلمك', delivery: 'يسأل عن التوصيل', catalog: 'يبي يشوف الخيارات', care: 'يسأل عن العناية', greeting: 'سلّم وينتظر', thanks: 'شكرك' };
 const ago = ms => { const m = Math.round(ms / 60000); return m < 60 ? `${m.toLocaleString('ar-SA')} د` : m < 1440 ? `${Math.round(m / 60).toLocaleString('ar-SA')} س` : `${Math.round(m / 1440).toLocaleString('ar-SA')} يوم` };
+let introBusy = false;
 async function buildPlan() {
   const now = Date.now(), today = todayStr(), P = store.plan[today] ??= { done: [], seen: [] }, items = [];
   for (const k of Object.keys(store.plan)) if (k < new Date(now - 7 * 864e5).toISOString().slice(0, 10)) delete store.plan[k];
@@ -554,8 +584,11 @@ async function buildPlan() {
   const newC = cs.filter(c => { const inc = c.messages.filter(m => !m.fromMe); return inc.length && Math.min(...inc.map(m => m.ts)) >= t0 }).length;
   const ordT = allOrders().filter(o => o.date && Date.parse(o.date) >= t0), ordV = ordT.reduce((x, o) => x + (+o.amount || 0), 0);
   const N = x => x.toLocaleString('ar-SA'), summary = [sent && `رديت على ${N(sent)} رسالة`, auto && `الموظف رد ${N(auto)} مرة`, newC && `${N(newC)} عميل جديد`, ordT.length && `${N(ordT.length)} طلب${ordV ? ` بقيمة ${N(ordV)} ر.س` : ''}`].filter(Boolean);
+  const sig = open.slice(0, 6).map(i => i.id).join('|');
+  if (P.introSig !== sig && !introBusy) { introBusy = true; brain('/plan_text', { items: open.slice(0, 6).map(i => `${i.title} — ${i.why}`) }, { ai: true })
+    .then(j => { if (j?.text) { P.intro = j.text; P.introAi = j.engine === 'ai'; P.introSig = sig; saveSoon() } }).finally(() => introBusy = false) }
   saveSoon();
-  return { greeting: greeting(), items: open.slice(0, 12), more: Math.max(0, open.length - 12), progress: { done: done.size, total: done.size + open.length },
+  return { greeting: greeting(), intro: P.intro || '', introAi: !!P.introAi, items: open.slice(0, 12), more: Math.max(0, open.length - 12), progress: { done: done.size, total: done.size + open.length },
     counts: { waiting: waiting.length, followups: rm.length, overdue: rm.filter(r => r.overdue).length }, summary, value: open.reduce((x, i) => x + (i.value || 0), 0), t: now };
 }
 // background: fill auto profiles (gives unnamed customers a name from «معك سارة», plus district/occasion…) without the owner typing
@@ -566,11 +599,53 @@ r.get('/api/plan', async (q, s) => s.json(await buildPlan()));
 r.post('/api/plan/done', (q, s) => { const id = String(q.body?.id || '').slice(0, 200); if (!id) return s.status(400).end(); const P = store.plan[todayStr()] ??= { done: [], seen: [] }; if (!P.done.includes(id)) P.done.push(id); saveSoon(); s.json({ ok: true }) });
 r.post('/api/ai/briefing', async (q, s) => { const p = await buildPlan(); const text = p.items.slice(0, 6).map(i => `• ${i.title} — ${i.why}`).join('\n') || '• ما فيه شي مستعجل 👌'; store.ai.briefing = { t: Date.now(), text }; saveSoon(); s.json(store.ai.briefing) });
 // ---- auto customer profile (brain) — cached per message count; the owner's edits win
-async function profileOf(c) {
+async function profileOf(c, deep = false) {
   const cr = store.crm[c.jid] ??= {}; const n = c.messages.length + ':' + (cr.orders || []).length;
-  if (cr.profileAuto?.n !== n) { const d = await brain('/profile', { messages: msgsFor(c, 300), orders: cr.orders || [] }); if (d) { cr.profileAuto = { n, data: d, t: Date.now() }; saveSoon() } }
+  const want = deep && aiOn() && !cr.profileAuto?.ai;   // opening a chat may upgrade the rule profile with the local AI (once per new message)
+  if (cr.profileAuto?.n !== n || want) { const d = await brain('/profile', { messages: msgsFor(c, 300), orders: cr.orders || [], deep }, { ai: deep }); if (d) { cr.profileAuto = { n, data: d, t: Date.now(), ai: !!(deep && aiOn()) }; saveSoon() } }
   return { ...(cr.profileAuto?.data || {}), ...(cr.profileEdit || {}), edited: Object.keys(cr.profileEdit || {}) };
 }
+// ---- Marketing v2.3: a short ranked list of ready actions. Drafts only — the owner opens each chat and presses send himself (no bulk sending).
+// Practices: follow up unanswered inquiries fast; win back buyers silent 30–90 days; pre-order notice before Saudi peak dates; yearly repeat of last year's
+// occasion; thank-you + review/referral after delivery; one WhatsApp Status a day. Daily cap keeps it human (anti-ban).
+const MKT_DAILY = 20;
+async function mktActions() {
+  const now = Date.now(), day = 864e5, cs = chatsList(), crmOf = j => store.crm[j] || {}, acts = [];
+  const lastIn = c => c.messages.filter(m => !m.fromMe).reduce((a, m) => Math.max(a, m.ts), 0), lastOut = c => c.messages.filter(m => m.fromMe).reduce((a, m) => Math.max(a, m.ts), 0);
+  const who = c => ({ jid: c.jid, label: c.label, disp: c.disp, name: c.name, first: (c.name || '').split(/\s+/)[0] || '' });
+  const ok = c => /^\d{8,15}$/.test(c.phone || '') || isLid(c.jid);
+  // 1) inquiries that went cold: asked about price/order 1–7 days ago, no order recorded, nothing from us in the last 24h
+  const cold = cs.filter(c => { const li = lastIn(c), lo = lastOut(c); const hot1 = new RegExp(HOT.source), asked = c.messages.some(m => !m.fromMe && hot1.test(m.text || ''));
+    return ok(c) && asked && !(crmOf(c.jid).orders || []).length && li > now - 7 * day && li < now - day && lo < now - day }).slice(0, MKT_DAILY);
+  if (cold.length) acts.push({ id: 'cold', icon: 'i-chat', title: 'عملاء سألوا وما كملوا', why: `${cold.length.toLocaleString('ar-SA')} عميل سأل عن سعر أو طلب خلال الأسبوع وما رجع. أسرع رسالة ترجعهم.`, score: 95 + cold.length,
+    goal: 'متابعة لطيفة لعميل سأل عن الورد وما كمل الطلب، نسأله إذا يحتاج مساعدة يختار', template: 'هلا {الاسم} 🌷 شفت إنك سألت عن الورد قبل كم يوم، لقيت اللي يناسبك؟ إذا تحب أرسل لك صور خيارات قريبة من ميزانيتك.', people: cold.map(who) });
+  // 2) yearly repeat: an order for an occasion ~1 year ago (next 3 weeks)
+  const rep = []; for (const c of cs) for (const o of crmOf(c.jid).orders || []) { const d = Date.parse(o.deliveryDate || '') || o.date || 0; const ahead = d + 365 * day - now; if (o.status !== 'ملغي' && ahead > 0 && ahead < 21 * day) { rep.push({ ...who(c), item: o.item, occasion: o.occasion || '' }); break } }
+  if (rep.length) acts.push({ id: 'repeat', icon: 'i-spark', title: 'مناسبات السنة الماضية', why: `${rep.length.toLocaleString('ar-SA')} عميل طلب منك هالوقت السنة الماضية. ذكّره قبل لا يطلب من غيرك.`, score: 90 + rep.length,
+    goal: 'تذكير لطيف لعميل طلب ورد بنفس الوقت السنة الماضية لمناسبة، نعرض نجهز له مثلها', template: 'هلا {الاسم} 🌸 السنة الماضية بهالوقت جهزنا لك ورد لمناسبتك، تبينا نجهز لك شي مثله أو أحلى هالسنة؟', people: rep.slice(0, MKT_DAILY) });
+  // 3) the next Saudi peak date (pre-order notice 1–4 weeks before) → past buyers first
+  const occ = ((await brain('/occasions', { days: 30 }))?.list || []).filter(o => o.days >= 3)[0];
+  const buyers = cs.filter(c => ok(c) && (crmOf(c.jid).orders || []).some(o => o.status !== 'ملغي'));
+  if (occ) acts.push({ id: 'occ', icon: 'i-bell', title: `${occ.occasion} بعد ${occ.days.toLocaleString('ar-SA')} يوم`, why: `افتح الحجز المبكر لعملائك اللي اشتروا قبل (${buyers.length.toLocaleString('ar-SA')}) قبل زحمة آخر يومين، واحجز الورد من المورد بدري.`, score: 80 - occ.days,
+    goal: `إعلان حجز مبكر لـ ${occ.occasion} لعميل اشترى قبل، بأولوية في الحجز`, template: `هلا {الاسم} 🌷 ${occ.occasion} قرب، وفتحنا الحجز المبكر لعملائنا قبل الزحمة. تحب أرسل لك الخيارات وتحجز موعدك؟`, people: buyers.slice(0, MKT_DAILY).map(who) });
+  // 4) win-back: bought before, silent 30–90 days
+  const wb = cs.filter(c => { const l = lastOf(c).ts || c.t || 0; return ok(c) && (crmOf(c.jid).orders || []).some(o => o.status !== 'ملغي') && l < now - 30 * day && l > now - 90 * day });
+  if (wb.length) acts.push({ id: 'winback', icon: 'i-user', title: 'رجّع عملاءك الغايبين', why: `${wb.length.toLocaleString('ar-SA')} عميل اشترى قبل وغاب من شهر لثلاث شهور. رسالة شخصية ترجّع أغلبهم.`, score: 70 + Math.min(20, wb.length),
+    goal: 'رسالة اشتياق لعميل اشترى قبل وغاب، نخبره بتشكيلة جديدة بدون إلحاح', template: 'هلا {الاسم} 🌷 اشتقنا لك! نزلت عندنا تشكيلة جديدة حلوة، تحب أرسل لك صورها؟', people: wb.slice(0, MKT_DAILY).map(who) });
+  // 5) thank-you + review / referral after a delivery (last 3 days)
+  const ty = cs.filter(c => ok(c) && (crmOf(c.jid).orders || []).some(o => o.status === 'تم التوصيل' && (Date.parse(o.deliveryDate || '') || o.date || 0) > now - 3 * day));
+  if (ty.length) acts.push({ id: 'thanks', icon: 'i-check', title: 'اشكر واطلب رأيهم', why: 'بعد التوصيل بيوم: اشكره، واسأله إذا يبي نذكّره بالمناسبة السنة الجاية، واطلب منه يرشحنا لأحد.', score: 60 + ty.length,
+    goal: 'شكر العميل بعد توصيل الورد، وسؤاله إذا يبي تذكير بالمناسبة السنة الجاية، وترشيح المحل لأحبابه', template: 'هلا {الاسم} 🌷 إن شاء الله الورد وصل وعجبهم! تحب نذكّرك بالمناسبة السنة الجاية؟ وإذا عجبك شغلنا رشحنا لأحبابك 🤍', people: ty.slice(0, MKT_DAILY).map(who) });
+  // 6) one WhatsApp Status for today (no recipients — he posts it himself)
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: S().tz, weekday: 'short' }).format(new Date());
+  const st = occ ? `تنسيق ${occ.occasion} جاهز للحجز المبكر 🌷 الكمية محدودة، احجز من الحين` : ['Wed', 'Thu'].includes(wd) ? 'الويكند جاي 🌷 بوكيهات جاهزة اليوم، اطلب قبل المغرب ونوصلها لك' : 'ورد اليوم وصل طازج 🌷 صوّره وانشره، واكتب: اطلب الحين ونوصله لك اليوم';
+  acts.push({ id: 'status', icon: 'i-spark', title: 'حالة واتساب اليوم', why: 'صورة وحدة حلوة من ورد اليوم مع جملة قصيرة. الحالة يشوفها عملاؤك بدون ما ترسل لأحد.', score: 40, status: true,
+    goal: 'نص قصير لحالة واتساب لمحل ورد يشجع على الطلب اليوم', template: st, people: [] });
+  return acts.sort((a, b) => b.score - a.score).slice(0, 5);
+}
+r.get('/api/mkt/actions', async (q, s) => { const today = todayStr(), sent = (store.mkt ??= {})[today] || []; s.json({ actions: await mktActions(), cap: MKT_DAILY, opened: sent.length }) });
+r.post('/api/mkt/draft', async (q, s) => { const b = q.body || {}; const j = await brain('/mkt_draft', { goal: String(b.goal || '').slice(0, 200), template: String(b.template || '').slice(0, 500) }, { ai: true }); s.json(j || { text: b.template, engine: 'rules' }) });
+r.post('/api/mkt/opened', (q, s) => { const today = todayStr(), m = store.mkt ??= {}; for (const k of Object.keys(m)) if (k < today) delete m[k]; const l = m[today] ??= []; const j = String(q.body?.jid || ''); if (j && !l.includes(j)) l.push(j); saveSoon(); s.json({ opened: l.length, cap: MKT_DAILY }) });
 r.post('/api/ai/campaign', (q, s) => s.json(campaign(q.body || {}, S())));
 r.post('/api/ai/reengage', (q, s) => {
   const now = Date.now(), D = S().dormantDays * 864e5;

@@ -5,7 +5,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env: { PYTHONUTF8: "1" }
     steps:
       - uses: actions/checkout@v7
@@ -18,6 +18,28 @@ jobs:
         run: |
           npm ci --omit=dev --no-audit --no-fund
           npm test
+      # Bundled local AI (free, offline, no download after install): llama.cpp CPU server + Qwen2.5-1.5B-Instruct Q4_K_M, pinned + checksummed
+      - name: Cache local AI files
+        uses: actions/cache@v4
+        with: { path: llm-cache, key: llm-b12024-qwen25-15b-q4km-v1 }
+      - name: Fetch local AI (llama.cpp b12024 + Qwen2.5-1.5B GGUF)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force llm-cache | Out-Null
+          $zip = "llm-cache\llama.zip"; $gguf = "llm-cache\qwen2.5-1.5b-instruct-q4_k_m.gguf"
+          if (-not (Test-Path $zip)) { Invoke-WebRequest "https://github.com/ggml-org/llama.cpp/releases/download/b12024/llama-b12024-bin-win-cpu-x64.zip" -OutFile $zip }
+          if (-not (Test-Path $gguf)) { Invoke-WebRequest "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" -OutFile $gguf }
+          $h = (Get-FileHash $gguf -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e") { Remove-Item $gguf; throw "model checksum mismatch: $h" }
+          New-Item -ItemType Directory -Force llm | Out-Null
+          Expand-Archive $zip -DestinationPath llm-x -Force
+          $srv = Get-ChildItem llm-x -Recurse -Filter llama-server.exe | Select-Object -First 1
+          if (-not $srv) { throw "llama-server.exe not in zip" }
+          Copy-Item "$($srv.DirectoryName)\*" llm -Recurse -Force
+          Get-ChildItem llm -Filter *.exe | Where-Object { $_.Name -ne "llama-server.exe" } | Remove-Item -Force   # keep only the server + its DLLs
+          Copy-Item $gguf llm\
+          "WAE_LLM_DIR=$PWD\llm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem llm | Format-Table Name, Length
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -35,6 +57,8 @@ jobs:
           robocopy engine dist\WhatsAppEmployee\engine /E /XD test data /XF *.log | Out-Null
           if (-not (Test-Path dist\WhatsAppEmployee\engine\node_modules\baileys)) { throw "baileys missing" }
           if (-not (Test-Path dist\WhatsAppEmployee\engine\public\fonts\Cairo.ttf)) { throw "font missing" }
+          robocopy llm dist\WhatsAppEmployee\llm /E | Out-Null
+          if (-not (Test-Path dist\WhatsAppEmployee\llm\llama-server.exe)) { throw "llm missing" }
           exit 0
       - name: Smoke test built exe
         shell: pwsh
@@ -46,6 +70,10 @@ jobs:
           $r = Start-Process -FilePath dist\WhatsAppEmployee\WhatsAppEmployee.exe -ArgumentList "--qr-test" -Wait -PassThru
           Get-Content dist\WhatsAppEmployee\data\logs\qr-test.txt -ErrorAction SilentlyContinue
           if ($r.ExitCode -ne 0) { Get-Content dist\WhatsAppEmployee\data\logs\startup.log -ErrorAction SilentlyContinue; throw "no real WhatsApp QR within 60s: $($r.ExitCode)" }
+          $env:WAE_LLM_DIR = ""
+          $a = Start-Process -FilePath dist\WhatsAppEmployee\WhatsAppEmployee.exe -ArgumentList "--ai-test" -Wait -PassThru
+          Get-Content dist\WhatsAppEmployee\data\logs\ai-test.txt -ErrorAction SilentlyContinue
+          if ($a.ExitCode -ne 0) { Get-Content dist\WhatsAppEmployee\data\logs\startup.log -ErrorAction SilentlyContinue; throw "bundled AI test failed: $($a.ExitCode)" }
           Remove-Item -Recurse -Force dist\WhatsAppEmployee\data -ErrorAction SilentlyContinue
       - name: Installer (Inno Setup)
         shell: pwsh
@@ -56,11 +84,27 @@ jobs:
       - name: Installer install / persistence / upgrade / uninstall test
         shell: pwsh
         run: |
+          $env:WAE_LLM_DIR = ""
           $s = Get-ChildItem dist\WhatsAppEmployee-Setup-*.exe | Select-Object -First 1
+          "installer size: {0:N0} bytes ({1:N2} GB)" -f $s.Length, ($s.Length / 1GB)
+          if ($s.Length -ge 2GB) { throw "installer is over the 2 GB release limit" }
           $app = "$env:LOCALAPPDATA\Programs\WhatsAppEmployee"; $exe = "$app\WhatsAppEmployee.exe"; $data = "$env:LOCALAPPDATA\WhatsAppEmployee"
+          # upgrade from the released v2.2.1: its data must survive installing this version on top
+          Invoke-WebRequest "https://github.com/moha700m/whatsapp-employee-pro/releases/download/v2.2.1/WhatsAppEmployee-Setup-2.2.1.exe" -OutFile old-setup.exe
+          $o = Start-Process old-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($o.ExitCode -ne 0) { throw "v2.2.1 install failed" }
+          $ow = Start-Process $exe -ArgumentList "--persist-test=write" -Wait -PassThru
+          if ($ow.ExitCode -ne 0) { throw "v2.2.1 persist write failed" }
           $p = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=install.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content install.log; throw "install failed" }
           if (-not (Test-Path $exe)) { throw "exe not installed" }
+          $oc = Start-Process $exe -ArgumentList "--persist-test=check" -Wait -PassThru
+          if ($oc.ExitCode -ne 0) { throw "upgrade 2.2.1 -> new lost data" }
+          "upgrade from v2.2.1: data kept"
+          if (-not (Test-Path "$app\llm\llama-server.exe")) { throw "installed app has no local AI" }
+          $ai = Start-Process $exe -ArgumentList "--ai-test" -Wait -PassThru
+          Get-Content "$app\data\logs\ai-test.txt" -ErrorAction SilentlyContinue
+          if ($ai.ExitCode -ne 0) { throw "installed AI test failed" }
           $q = Start-Process $exe -ArgumentList "--smoke" -Wait -PassThru
           Get-Content "$app\data\logs\smoke.txt"
           if ($q.ExitCode -ne 0) { Get-Content "$app\data\logs\startup.log" -ErrorAction SilentlyContinue; throw "installed smoke failed" }
@@ -86,7 +130,7 @@ jobs:
           "install / close-reopen / upgrade / uninstall / reinstall: data kept"
       - name: Zip portable app
         shell: pwsh
-        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.2.1.zip
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.3.0.zip
       - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
       - uses: actions/upload-artifact@v7

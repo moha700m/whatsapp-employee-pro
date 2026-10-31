@@ -24,9 +24,9 @@ PRODUCTS = [  # default price table (ر.س) — the owner edits these; the brain
 OCCASIONS = {  # month-day for fixed Saudi dates; Hijri ones are entered by date each year in settings
     "يوم التأسيس": {"aliases": ["التاسيس", "يوم التاسيس", "founding"], "date": "02-22", "colors": "بني وذهبي وأخضر", "suggest": ["بوكيه ورد مشكل", "صندوق ورد فاخر"]},
     "اليوم الوطني": {"aliases": ["اليوم الوطني", "الوطني", "٩٣", "national day"], "date": "09-23", "colors": "أخضر وأبيض", "suggest": ["صندوق ورد فاخر", "تنسيق طاولة"]},
-    "عيد الفطر": {"aliases": ["عيد الفطر", "العيد", "عيديه", "عيدية"], "date": None, "colors": "ألوان فرح", "suggest": ["ورد مع شوكولاتة", "بوكيه ورد مشكل"]},
-    "عيد الأضحى": {"aliases": ["عيد الاضحى", "الاضحى"], "date": None, "colors": "ألوان فرح", "suggest": ["ورد مع شوكولاتة"]},
-    "رمضان": {"aliases": ["رمضان", "رمضانيه", "قرقيعان", "غبقه", "سحور"], "date": None, "colors": "ذهبي وبنفسجي", "suggest": ["تنسيق طاولة", "ورد مع شوكولاتة"]},
+    "عيد الفطر": {"aliases": ["عيد الفطر", "العيد", "عيديه", "عيدية"], "date": None, "dates": ["2026-03-20", "2027-03-09", "2028-02-26"], "colors": "ألوان فرح", "suggest": ["ورد مع شوكولاتة", "بوكيه ورد مشكل"]},
+    "عيد الأضحى": {"aliases": ["عيد الاضحى", "الاضحى"], "date": None, "dates": ["2026-05-27", "2027-05-17", "2028-05-05"], "colors": "ألوان فرح", "suggest": ["ورد مع شوكولاتة"]},
+    "رمضان": {"aliases": ["رمضان", "رمضانيه", "قرقيعان", "غبقه", "سحور"], "date": None, "dates": ["2026-02-18", "2027-02-08", "2028-01-28"], "colors": "ذهبي وبنفسجي", "suggest": ["تنسيق طاولة", "ورد مع شوكولاتة"]},
     "يوم الأم": {"aliases": ["يوم الام", "عيد الام", "لامي", "للوالده", "امي"], "date": "03-21", "colors": "وردي وأبيض", "suggest": ["بوكيه ورد جوري", "ورد مع شوكولاتة"]},
     "زواج": {"aliases": ["زواج", "عرس", "زفاف", "ملكه", "خطوبه", "عروس", "شبكه"], "date": None, "colors": "أبيض ووردي فاتح", "suggest": ["مسكة عروس", "كوشة زواج", "تنسيق طاولة"]},
     "تخرج": {"aliases": ["تخرج", "تخرجت", "حفل تخرج", "نجاح", "نجحت"], "date": "06-15", "colors": "حسب لون الوشاح", "suggest": ["ورد تخرج", "بالون هيليوم"]},
@@ -145,9 +145,13 @@ def save_kb(repo, kb):
 def upcoming_occasions(today=None, days=45, kb=None):
     today = today or date.today(); out = []
     for name, o in (kb or default_kb())["occasions"].items():
-        if not o.get("date"): continue
-        m, d = map(int, o["date"].split("-"))
-        nxt = date(today.year, m, d)
-        if nxt < today: nxt = date(today.year + 1, m, d)
+        if o.get("dates"):   # Hijri occasions: expected Gregorian dates (Umm al-Qura estimates, confirmed by the official announcement)
+            nxt = next((date.fromisoformat(x) for x in sorted(o["dates"]) if date.fromisoformat(x) >= today), None)
+            if not nxt: continue
+        elif not o.get("date"): continue
+        else:
+            m, d = map(int, o["date"].split("-"))
+            nxt = date(today.year, m, d)
+            if nxt < today: nxt = date(today.year + 1, m, d)
         if (nxt - today).days <= days: out.append({"occasion": name, "date": nxt.isoformat(), "days": (nxt - today).days})
     return sorted(out, key=lambda x: x["days"])

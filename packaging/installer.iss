@@ -1,7 +1,7 @@
 ; «موظف واتساب» — Inno Setup 6 script (Arabic-first, per-user, no admin).
 ; Build: ISCC packaging\installer.iss   (after PyInstaller → dist\WhatsAppEmployee)
 #define AppName "موظف واتساب"
-#define AppVer "2.2.1"
+#define AppVer "2.3.0"
 #define AppExe "WhatsAppEmployee.exe"
 #define Publisher "Mohammed alzhrani"
 #define AppUrl "https://github.com/moha700m/whatsapp-employee-pro"
@@ -81,7 +81,9 @@ english.Uninstall=Uninstall WhatsApp Employee
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Shortcuts}"
 
 [Files]
-Source: "..\dist\WhatsAppEmployee\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "data\*"
+Source: "..\dist\WhatsAppEmployee\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "data\*,*.gguf"
+; the local AI model is already compressed (Q4) — store it as-is so building and installing stay fast
+Source: "..\dist\WhatsAppEmployee\llm\*.gguf"; DestDir: "{app}\llm"; Flags: ignoreversion nocompression
 
 [Dirs]
 Name: "{app}\data"; Flags: uninsneveruninstall
