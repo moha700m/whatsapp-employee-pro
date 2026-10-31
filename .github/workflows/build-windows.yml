@@ -33,7 +33,7 @@ jobs:
           New-Item -ItemType Directory -Force dist\WhatsAppEmployee\node | Out-Null
           Copy-Item (Get-Command node).Source dist\WhatsAppEmployee\node\node.exe
           robocopy engine dist\WhatsAppEmployee\engine /E /XD test data /XF *.log | Out-Null
-          if (-not (Test-Path dist\WhatsAppEmployee\engine\node_modules\@whiskeysockets\baileys)) { throw "baileys missing" }
+          if (-not (Test-Path dist\WhatsAppEmployee\engine\node_modules\baileys)) { throw "baileys missing" }
           if (-not (Test-Path dist\WhatsAppEmployee\engine\public\fonts\Cairo.ttf)) { throw "font missing" }
           exit 0
       - name: Smoke test built exe
