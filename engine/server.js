@@ -425,7 +425,8 @@ r.get('/api/media', async (q, s) => {
     s.sendFile(f) }
   catch (e) { s.status(502).json({ error: 'ما قدرنا نجيب الملف الحين، تأكد إن الجوال متصل وجرب مرة ثانية' }) }
 });
-r.get('/api/chat', async (q, s) => { const c = chatsList().find(x => x.jid === q.query.jid); if (!c) return s.json(null); const profile = q.query.profile ? await profileOf(c, true) : undefined; s.json({ ...c, messages: [...c.messages].sort((a, b) => a.ts - b.ts).slice(-400), crm: store.crm[c.jid] || {}, pendingAuto: pending.has(c.jid), profile, ...chatState(c) }) });
+r.get('/api/chat', async (q, s) => { const c = chatsList().find(x => x.jid === q.query.jid); if (!c) return s.json(null); const profile = q.query.profile ? await profileOf(c, false) : undefined;
+  if (q.query.profile && aiOn() && !store.crm[c.jid]?.profileAuto?.ai) profileOf(c, true).catch(() => {}); /* AI upgrade in the background: opening a chat never waits for it */ s.json({ ...c, messages: [...c.messages].sort((a, b) => a.ts - b.ts).slice(-400), crm: store.crm[c.jid] || {}, pendingAuto: pending.has(c.jid), profile, ...chatState(c) }) });
 r.post('/api/send', async (q, s) => {
   const { jid, text, confirm } = q.body || {};
   if (confirm !== true || !jid || !store.chats[jid] || typeof text !== 'string' || !text.trim() || text.length > 4000) return s.status(400).json({ error: 'طلب غير صالح' });

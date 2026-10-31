@@ -189,7 +189,7 @@ def do_profile(body):
     ai_note = ""
     if body.get("deep") and llm_on(body):
         try:
-            j = AI.ai_json(LLM, "أنت مساعد مبيعات لمحل ورد سعودي. اقرأ رسائل العميل ورجّع JSON فقط: {\"summary\": جملة سعودية قصيرة تلخص العميل ووش يبي, \"next\": أفضل خطوة جاية لصاحب المحل بجملة قصيرة}.", "\n".join(inc[-15:]), 140)
+            j = AI.ai_json(LLM, "أنت مساعد مبيعات لمحل ورد سعودي. اقرأ رسائل العميل ورجّع JSON فقط: {\"summary\": جملة سعودية قصيرة تلخص العميل ووش يبي, \"next\": أفضل خطوة جاية لصاحب المحل بجملة قصيرة}.", "\n".join(inc[-15:]), 140, wait=1)
             if isinstance(j.get("next"), str) and AI.AR.search(j["next"]) and not AI.guard(b, j["next"], body.get("teach")): nba = j["next"][:120]
             if isinstance(j.get("summary"), str) and AI.AR.search(j["summary"]): ai_note = j["summary"][:160]
         except Exception: pass
@@ -213,7 +213,7 @@ def do_plan_text(body):
     if not items or not llm_on(body): return {"text": base, "engine": "rules"}
     try:
         t = LLM.chat([{"role": "system", "content": "أنت مساعد سعودي لصاحب محل ورد. اكتب جملتين قصيرتين باللهجة السعودية تشجعه وتقول له وش يبدأ فيه اليوم، بدون أرقام أسعار وبدون قوائم."},
-                      {"role": "user", "content": "مهام اليوم:\n" + "\n".join(items)}], max_tokens=90, temperature=0.6)
+                      {"role": "user", "content": "مهام اليوم:\n" + "\n".join(items)}], max_tokens=90, temperature=0.6, wait=1)
         t = AI.clean(t)
         if AI.AR.search(t) and not re.search(r"\d{3,}", t): return {"text": t, "engine": "ai"}
     except Exception: pass

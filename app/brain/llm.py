@@ -59,7 +59,7 @@ class LocalLLM:
         self.ram = round(ram_gb(), 1)
         self.threads = threads or max(2, min(4, (os.cpu_count() or 4) // 2))
         self.ctx, self.idle = ctx, idle
-        self.proc = None; self.port = None; self.state = "idle"; self.error = ""; self.last = 0.0; self.lock = threading.Lock()
+        self.proc = None; self.port = None; self.state = "idle"; self.error = ""; self.last = 0.0; self.lock = threading.Lock(); self.slot = threading.Semaphore(1)
         self.stats = {"calls": 0, "fails": 0, "avg_ms": 0, "last_ms": 0, "load_ms": 0}
         threading.Thread(target=self._reaper, daemon=True).start()
 
@@ -96,7 +96,13 @@ class LocalLLM:
                 time.sleep(0.4)
             self.stop(); self.state = "error"; self.stats["fails"] += 1; raise RuntimeError("الذكاء تأخر في التشغيل")
 
-    def chat(self, messages, max_tokens=160, temperature=0.5, timeout=60, json_mode=False):
+    def chat(self, messages, max_tokens=160, temperature=0.5, timeout=60, json_mode=False, wait=12):
+        """One request at a time (CPU). If the model is busy longer than `wait` seconds we give up → caller uses the rule brain (UI never hangs)."""
+        if not self.slot.acquire(timeout=wait): raise RuntimeError("busy")
+        try: return self._chat(messages, max_tokens, temperature, timeout, json_mode)
+        finally: self.slot.release()
+
+    def _chat(self, messages, max_tokens, temperature, timeout, json_mode):
         self.ensure(); t0 = time.time()
         body = {"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.9, "repeat_penalty": 1.1, "cache_prompt": True, "stream": False}
         if json_mode: body["response_format"] = {"type": "json_object"}

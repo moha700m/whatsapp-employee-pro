@@ -139,7 +139,7 @@ def ai_reply(llm, brain, kb, teach, text, history=None, rule_reply="", hint="", 
     if issues and retry: out, issues = one(0.7)      # one more try with a different sample, then the caller falls back to the rule reply
     return out, issues
 
-def ai_json(llm, prompt, text, max_tokens=200):
-    raw = llm.chat([{"role": "system", "content": prompt}, {"role": "user", "content": text[:2500]}], max_tokens=max_tokens, temperature=0.1, json_mode=True)
+def ai_json(llm, prompt, text, max_tokens=200, wait=12):
+    raw = llm.chat([{"role": "system", "content": prompt}, {"role": "user", "content": text[:2500]}], max_tokens=max_tokens, temperature=0.1, json_mode=True, wait=wait)
     try: return json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
     except Exception: return {}

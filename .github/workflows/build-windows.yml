@@ -46,7 +46,12 @@ jobs:
           pip install -r requirements.txt pyinstaller
           python -m playwright install chromium
       - name: Tests
-        run: python -m pytest -q
+        run: |
+          $env:WAE_NO_LLM = "1"; python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "tests failed" }
+          $env:WAE_NO_LLM = ""; python -m pytest -q -s tests/test_v23.py -k local_ai
+          if ($LASTEXITCODE -ne 0) { throw "local AI quality/latency test failed" }
+        shell: pwsh
       - name: Build exe (PyInstaller one-folder)
         run: pyinstaller packaging\whatsapp_employee.spec --noconfirm --distpath dist --workpath build
       - name: Bundle Node runtime + engine
