@@ -46,6 +46,7 @@ def startup_log(msg):
     except Exception: pass
 
 def smoke():
+    os.environ.setdefault("WAE_NO_LLM", "1")   # the end-to-end flow is checked with the rule brain; the bundled AI has its own --ai-test
     """Self-test of the packaged app: brain + Node engine in simulator mode, full scenario, restart, persistence."""
     import tempfile
     from app.launcher import Engine
@@ -145,6 +146,7 @@ def start_tray(win, on_quit):
         return None
 
 def persist_test(mode):
+    os.environ.setdefault("WAE_NO_LLM", "1")   # the end-to-end flow is checked with the rule brain; the bundled AI has its own --ai-test
     """CI check that user data survives close/reopen and installer upgrade/uninstall. Uses the real user data folder."""
     from app.launcher import Engine, user_data_dir
     from app import e2e
