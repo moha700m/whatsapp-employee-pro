@@ -48,7 +48,7 @@ def forbidden_hit(teach, text):
     for w in merged_teach(teach)["forbidden"]:
         n = norm(w)
         if len(n) < 2: continue
-        if (" " in n and n in t) or n in words or any(x in words for x in ("ال" + n, "و" + n, "بال" + n, "لل" + n)): return w
+        if (" " in n and n in t) or any(x in words for x in (n, "ال" + n, "و" + n, "بال" + n, "لل" + n)) or any(x.startswith(n) and len(x) <= len(n) + 2 for x in words): return w   # دين / دينك / ديننا
     return None
 
 def knowledge(kb, text, teach, k=6):
@@ -113,6 +113,7 @@ def guard(brain, reply, teach, e=None):
     if forbidden_hit(teach, reply): issues.append("كلمة ممنوعة")
     if re.search(r"(تم تاكيد|تم تأكيد|اكدنا طلبك|أكدنا طلبك)", reply or ""): issues.append("تأكيد طلب")
     if len(reply or "") > 230: issues.append("طويل")
+    if "?" in (reply or ""): issues.append("علامة سؤال إنجليزية")
     if len(re.findall(r"\d+\s*(?:ر\.?س|ريال)", reply or "")) > 2: issues.append("سرد أسعار كثير")
     if MSA.search(reply or ""): issues.append("فصحى مو سعودي")
     return issues

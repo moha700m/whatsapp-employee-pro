@@ -106,6 +106,7 @@ jobs:
           $oc = Start-Process $exe -ArgumentList "--persist-test=check" -Wait -PassThru
           if ($oc.ExitCode -ne 0) { throw "upgrade 2.2.1 -> new lost data" }
           "upgrade from v2.2.1: data kept"
+          Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue   # start the fresh-install checks below from empty data
           if (-not (Test-Path "$app\llm\llama-server.exe")) { throw "installed app has no local AI" }
           $ai = Start-Process $exe -ArgumentList "--ai-test" -Wait -PassThru
           Get-Content "$app\data\logs\ai-test.txt" -ErrorAction SilentlyContinue
