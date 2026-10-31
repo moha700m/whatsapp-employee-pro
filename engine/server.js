@@ -13,7 +13,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1';
-const VERSION = process.env.APP_VERSION || '2.1.0';
+const VERSION = process.env.APP_VERSION || '2.1.1';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------
@@ -89,7 +89,7 @@ const msgsFor = (c, n = 40) => [...c.messages].sort((a, b) => a.ts - b.ts).slice
 
 // ---------------- incoming: alerts + the auto-reply employee ----------------
 const pending = new Map();   // jid -> timer (one scheduled auto reply per customer)
-let state = { status: 'starting', qr: null, me: null, syncing: false, lastSync: null }, realSend = null, SOCK = null;
+let state = { status: 'starting', qr: null, me: null, syncing: false, lastSync: null, since: Date.now(), error: null, attempts: 0 }, realSend = null, SOCK = null;
 async function onIncoming(c, msg) {
   if (c.isGroup || msg.fromMe || BAD_JID(c.jid)) return;
   if (Date.now() - msg.ts > 5 * 60e3) return;
@@ -120,7 +120,15 @@ async function sendAuto(jid, trigger, d) {
 }
 
 // ---------------- WhatsApp connection ----------------
-let fake = null, connecting = false;
+let fake = null, connecting = false, profileIdx = 0, failsNoQr = 0, retryT = null;
+// Ubuntu/Chrome is what WhatsApp accepts for QR linking (the "Desktop" profiles get 428 Connection Terminated before any QR).
+const PROFILES = [B => B.Browsers.ubuntu('Chrome'), B => B.Browsers.appropriate ? B.Browsers.appropriate('Chrome') : B.Browsers.ubuntu('Chrome'), B => B.Browsers.macOS('Chrome')];
+const WHY = { 428: 'واتساب قطع الاتصال قبل ما يعطينا الرمز', 405: 'واتساب رفض نوع الجهاز', 408: 'انتهت مهلة الاتصال بواتساب', 403: 'واتساب منع الاتصال', 500: 'خطأ من خوادم واتساب', 503: 'خوادم واتساب مشغولة', 515: 'واتساب طلب إعادة تشغيل الاتصال' };
+function diagnose(code, msg) {
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|getaddrinfo|socket hang up/i.test(msg)) return 'ما قدرنا نوصل لخوادم واتساب — تأكد من الإنترنت، أو إن الجدار الناري/برنامج الحماية ما يمنع البرنامج';
+  return WHY[code] || ('انقطع الاتصال بواتساب' + (code ? ` (رمز ${code})` : ''));
+}
+function scheduleReconnect(ms) { clearTimeout(retryT); retryT = setTimeout(connect, ms) }
 async function connect() {
   if (connecting) return; connecting = true;
   try {
@@ -130,21 +138,27 @@ async function connect() {
       const pino = (await import('pino')).default; const M = await import('@whiskeysockets/baileys'); const B = M.useMultiFileAuthState ? M : M.default;
       const makeWASocket = typeof B.default === 'function' ? B.default : B.makeWASocket;
       const { state: auth, saveCreds } = await B.useMultiFileAuthState(path.join(DIR, 'auth')); const { version } = await B.fetchLatestBaileysVersion().catch(() => ({}));
-      sock = makeWASocket({ auth, version, logger: pino({ level: 'silent' }), browser: B.Browsers.windows('Desktop'), syncFullHistory: true,
+      sock = makeWASocket({ auth, version, logger: pino({ level: 'silent' }), browser: PROFILES[profileIdx % PROFILES.length](B), syncFullHistory: true,
         shouldSyncHistoryMessage: () => true, markOnlineOnConnect: false, printQRInTerminal: false, getMessage: async () => undefined });
       sock.ev.on('creds.update', saveCreds); sock._B = B;
     }
-    realSend = sock.sendMessage.bind(sock); SOCK = sock;
+    const old = SOCK; realSend = sock.sendMessage.bind(sock); SOCK = sock;
+    if (old && old !== sock) try { old.end?.(undefined) } catch { }
     // Only realSend (owner presses Send, or the owner-enabled employee) may send. Every other mutating call is disabled.
     for (const f of ['sendMessage', 'readMessages', 'sendReceipt', 'sendReceipts', 'sendPresenceUpdate', 'chatModify', 'relayMessage', 'updateBlockStatus', 'groupLeave', 'star', 'addOrEditContact', 'removeContact', 'updateProfileStatus', 'updateProfileName'])
       if (typeof sock[f] === 'function') sock[f] = async () => {};
-    sock.ev.on('connection.update', async u => {
-      if (u.qr) { state.qr = await QRCode.toDataURL(u.qr, { width: 360, margin: 1 }); state.status = 'qr' }
-      if (u.connection === 'open') { state.status = 'connected'; state.qr = null; state.me = phoneOf(sock.user?.id); state.syncing = true; audit('whatsapp_linked', {}); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 25e3) }
+    sock.ev.on('connection.update', async u => { if (SOCK !== sock) return;  // ignore events from a replaced socket
+      if (u.qr) { state.qr = await QRCode.toDataURL(u.qr, { width: 360, margin: 1 }); state.status = 'qr'; state.error = null; failsNoQr = 0; console.log('WA qr ready') }
+      if (u.connection === 'open') { state.status = 'connected'; state.qr = null; state.error = null; failsNoQr = 0; state.me = phoneOf(sock.user?.id); state.syncing = true; audit('whatsapp_linked', {}); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 25e3) }
       if (u.connection === 'close') {
-        const code = u.lastDisconnect?.error?.output?.statusCode; connecting = false;
-        if (code === 401 || code === sock._B?.DisconnectReason?.loggedOut) { state.status = 'loggedOut'; fs.rmSync(path.join(DIR, 'auth'), { recursive: true, force: true }) } else state.status = 'reconnecting';
-        setTimeout(connect, 3000);
+        const err = u.lastDisconnect?.error, code = err?.output?.statusCode, msg = String(err?.message || ''); connecting = false; state.attempts++;
+        console.log(new Date().toISOString(), 'WA close', code, msg.slice(0, 160));
+        if (code === 401 || code === sock._B?.DisconnectReason?.loggedOut) { state.status = 'loggedOut'; state.qr = null; fs.rmSync(path.join(DIR, 'auth'), { recursive: true, force: true }); return scheduleReconnect(1500) }
+        if (code === 515) { state.status = 'reconnecting'; return scheduleReconnect(500) }          // restart required right after scanning
+        const linked = !!sock.authState?.creds?.registered || !!state.me;
+        if (!linked && state.status !== 'qr') { failsNoQr++; if (failsNoQr % 2 === 0) profileIdx++ }  // no QR yet → try the next browser profile
+        state.status = 'reconnecting'; state.qr = null; state.error = { code: code || null, text: diagnose(code, msg), at: Date.now() };
+        scheduleReconnect(Math.min(30e3, 2000 * Math.max(1, failsNoQr)));
       }
     });
     sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
@@ -153,7 +167,8 @@ async function connect() {
     });
     sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { const r = addMsg(m); if (r && type === 'notify') onIncoming(resolve(r.c), r.msg) } saveSoon() });
     sock.ev.on('contacts.upsert', cs => { cs.forEach(addContact); saveSoon() }); sock.ev.on('contacts.update', cs => { cs.forEach(addContact); saveSoon() });
-  } finally { connecting = false }
+  } catch (e) { console.log(new Date().toISOString(), 'WA start failed', e?.stack || e); state.status = 'reconnecting'; state.error = { code: null, text: diagnose(null, String(e?.message || e)), at: Date.now() }; scheduleReconnect(5000) }
+  finally { connecting = false }
 }
 if (process.env.NO_WA === '1') state.status = 'connected'; else connect();
 
@@ -234,7 +249,7 @@ r.post('/api/auth/password', (q, s) => {
 let analysis = (() => { try { return JSON.parse(fs.readFileSync(path.join(DIR, 'analysis.json'), 'utf8')) } catch { return null } })();
 r.get('/api/state', (q, s) => {
   const cs = chatsList(), ar = S().autoReply;
-  s.json({ status: state.status, qr: state.qr, me: state.me, syncing: state.syncing, lastSync: state.lastSync, version: VERSION, sim: FAKE,
+  s.json({ status: state.status, qr: state.qr, me: state.me, error: state.error, attempts: state.attempts, waitingSec: Math.round((Date.now() - state.since) / 1000), syncing: state.syncing, lastSync: state.lastSync, version: VERSION, sim: FAKE,
     brain: brainOk || !!BRAIN_URL && S().aiEnabled, chats: cs.length, messages: cs.reduce((a, c) => a + c.messages.length, 0), analysis,
     unreadAlerts: store.alerts.filter(a => !a.read).length, now: hm(new Date(), S().tz), open: inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)),
     employee: { enabled: !!ar.enabled, active: !!ar.enabled && scheduleOpen(ar, S(), Date.now()), schedule: ar.schedule, mode: ar.mode, pending: pending.size } });
@@ -309,10 +324,15 @@ r.get('/api/audit', (q, s) => s.json(store.audit.slice(0, 400)));
 r.get('/api/alerts', (q, s) => s.json(store.alerts.slice(0, 60)));
 r.post('/api/alerts/read', (q, s) => { store.alerts.forEach(a => a.read = true); saveSoon(); s.json({ ok: true }) });
 r.get('/api/dashboard', (q, s) => s.json({ analytics: analytics(), hot: hotLeads(), reminders: reminders(), briefing: store.ai.briefing || null, orders: allOrders().filter(o => !['تم التوصيل', 'ملغي'].includes(o.status)).slice(0, 8) }));
+r.post('/api/wa/retry', (q, s) => { state.since = Date.now(); state.attempts = 0; state.error = null; failsNoQr = 0; scheduleReconnect(100); audit('wa_retry', {}); s.json({ ok: true }) });
+r.post('/api/wa/reset', (q, s) => {   // clear a stale/corrupt link session (keeps chats, customers and settings)
+  const old = SOCK; SOCK = null; try { old?.end?.(undefined) } catch { } fs.rmSync(path.join(DIR, 'auth'), { recursive: true, force: true });
+  state = { ...state, status: 'starting', qr: null, me: null, error: null, attempts: 0, since: Date.now() }; profileIdx = 0; failsNoQr = 0; scheduleReconnect(300); audit('wa_reset', {}); s.json({ ok: true });
+});
 r.post('/api/logout', async (q, s) => {
   try { await SOCK?.logout?.() } catch { } fs.rmSync(path.join(DIR, 'auth'), { recursive: true, force: true });
   store.chats = {}; store.contacts = {}; store.alerts = []; analysis = null; audit('whatsapp_unlinked', {}); save(); s.json({ ok: true });
-  state = { status: 'starting', qr: null, me: null }; setTimeout(connect, 800);
+  state = { ...state, status: 'starting', qr: null, me: null, error: null, since: Date.now() }; scheduleReconnect(800);
 });
 // ---- brain endpoints (suggestions only — they never send)
 const getChat = jid => chatsList().find(x => x.jid === jid);
@@ -356,7 +376,7 @@ if (FAKE) {
 r.use(express.static(path.join(HERE, 'public'), { index: 'index.html' }));
 app.get('/', (q, s) => s.status(404).send('Not found'));
 app.use('/' + TOKEN, r); app.use((q, s) => s.status(404).send('Not found'));
-const server = app.listen(PORT, HOST, () => console.log(`ENGINE READY http://${HOST}:${PORT}/${TOKEN}/`));
+const server = app.listen(PORT, HOST, () => console.log(`ENGINE READY http://${HOST}:${PORT}/<token>/`));
 const bye = () => { try { save() } catch { } process.exit(0) };
 process.on('SIGINT', bye); process.on('SIGTERM', bye);
 if (process.env.EXIT_WITH_STDIN === '1') { process.stdin.on('end', bye); process.stdin.resume() }   // parent app closed → stop

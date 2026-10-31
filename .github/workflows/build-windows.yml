@@ -43,6 +43,9 @@ jobs:
           Get-Content dist\WhatsAppEmployee\data\logs\smoke.txt -ErrorAction SilentlyContinue
           Get-Content dist\WhatsAppEmployee\data\logs\startup.log -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "smoke failed: $($p.ExitCode)" }
+          $r = Start-Process -FilePath dist\WhatsAppEmployee\WhatsAppEmployee.exe -ArgumentList "--qr-test" -Wait -PassThru
+          Get-Content dist\WhatsAppEmployee\data\logs\qr-test.txt -ErrorAction SilentlyContinue
+          if ($r.ExitCode -ne 0) { Get-Content dist\WhatsAppEmployee\data\logs\startup.log -ErrorAction SilentlyContinue; throw "no real WhatsApp QR within 60s: $($r.ExitCode)" }
           Remove-Item -Recurse -Force dist\WhatsAppEmployee\data -ErrorAction SilentlyContinue
       - name: Installer (Inno Setup)
         shell: pwsh
@@ -61,6 +64,9 @@ jobs:
           $q = Start-Process $exe -ArgumentList "--smoke" -Wait -PassThru
           Get-Content "$app\data\logs\smoke.txt"
           if ($q.ExitCode -ne 0) { Get-Content "$app\data\logs\startup.log" -ErrorAction SilentlyContinue; throw "installed smoke failed" }
+          $qr = Start-Process $exe -ArgumentList "--qr-test" -Wait -PassThru
+          Get-Content "$app\data\logs\qr-test.txt" -ErrorAction SilentlyContinue
+          if ($qr.ExitCode -ne 0) { throw "installed exe: no real WhatsApp QR within 60s" }
           $w = Start-Process $exe -ArgumentList "--persist-test=write" -Wait -PassThru
           if ($w.ExitCode -ne 0) { Get-Content "$app\data\logs\startup.log" -ErrorAction SilentlyContinue; throw "persist write failed" }
           if (-not (Test-Path "$data\wa\store.json")) { throw "user data not in LOCALAPPDATA\WhatsAppEmployee" }
@@ -80,7 +86,7 @@ jobs:
           "install / close-reopen / upgrade / uninstall / reinstall: data kept"
       - name: Zip portable app
         shell: pwsh
-        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.1.0.zip
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.1.1.zip
       - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
       - uses: actions/upload-artifact@v7

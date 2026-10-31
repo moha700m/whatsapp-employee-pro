@@ -1,7 +1,7 @@
 ; «موظف واتساب» — Inno Setup 6 script (Arabic-first, per-user, no admin).
 ; Build: ISCC packaging\installer.iss   (after PyInstaller → dist\WhatsAppEmployee)
 #define AppName "موظف واتساب"
-#define AppVer "2.1.0"
+#define AppVer "2.1.1"
 #define AppExe "WhatsAppEmployee.exe"
 #define Publisher "Mohammed (moha700m)"
 #define AppUrl "https://github.com/moha700m/whatsapp-employee-pro"

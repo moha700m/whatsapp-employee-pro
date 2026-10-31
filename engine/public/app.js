@@ -67,7 +67,8 @@ async function tick() {
   $('#bellDot').hidden = !ST.unreadAlerts; if (ST.unreadAlerts > (tick.n ?? ST.unreadAlerts)) notify(); tick.n = ST.unreadAlerts;
   const sb = $('#syncBar'); sb.hidden = !(ST.status === 'connected' && ST.syncing);
   if (!sb.hidden) sb.innerHTML = `<span class="spin"></span>نحمّل محادثاتك القديمة من الجوال… وصلنا ${num(ST.chats)} محادثة و${num(ST.messages)} رسالة`;
-  if (PAGE === 'home' && (ST.status !== tick.s || (ST.syncing && ST.chats !== tick.c))) renderHome(); tick.s = ST.status; tick.c = ST.chats;
+  const dg = !ST.qr && ((ST.waitingSec || 0) >= 30 || (ST.error && ST.attempts >= 3)) ? (ST.error?.text || '1') + ST.attempts : '';
+  if (PAGE === 'home' && (ST.status !== tick.s || ST.qr !== tick.q || dg !== tick.d || (ST.syncing && ST.chats !== tick.c))) renderHome(); tick.s = ST.status; tick.c = ST.chats; tick.q = ST.qr; tick.d = dg;
   if (PAGE === 'chats') { await loadChats(); if (CH) drawThread() }
 }
 async function notify() { try { const a = await api('api/alerts'); const n = a.find(x => !x.read); if (n) { toast(n.text); if (window.Notification?.permission === 'granted' && document.hidden) new Notification(SET.shopName || 'تنبيه', { body: n.text }) } } catch { } }
@@ -142,7 +143,11 @@ async function renderHome() {
     <div><h1 style="font-size:30px;font-weight:800">اربط واتساب المحل</h1><p class="muted" style="font-size:17px;margin-top:6px">${ST.status === 'loggedOut' ? 'انفصل الرقم من الجوال. امسح الرمز من جديد.' : ST.status === 'reconnecting' ? 'نعيد الاتصال… لحظات.' : 'مرة وحدة بس، وبعدها يبقى مربوط حتى لو قفلت البرنامج.'}</p>
     <ol class="steps"><li>افتح واتساب في جوال المحل</li><li>اضغط ⋮ أو الإعدادات ← الأجهزة المرتبطة</li><li>اضغط «ربط جهاز» وامسح الرمز</li></ol>
     <div class="notice g">بعد الربط تنزل محادثاتك القديمة تلقائياً. البرنامج ما يرسل أي رسالة إلا لما تضغط «إرسال» بنفسك، أو تشغّل الموظف.</div>
+    ${!ST.qr && !ST.sim && ((ST.waitingSec || 0) >= 30 || (ST.error && ST.attempts >= 3)) ? `<div class="notice" id="waDiag" role="alert" style="margin-top:14px;border-color:var(--bad,#c0392b)"><b>ما وصلنا رمز الربط من واتساب.</b><br>السبب: ${esc(ST.error?.text || 'الاتصال بواتساب بطيء أو محجوب — تأكد من الإنترنت ومن إن برنامج الحماية ما يمنع البرنامج')}.<br><span class="muted">نحاول تلقائياً${ST.attempts ? ` (محاولة ${ST.attempts.toLocaleString('ar-SA')})` : ''}. السجل محفوظ في مجلد logs داخل بيانات البرنامج.</span>
+      <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap"><button class="btn primary" id="waRetry">إعادة المحاولة</button><button class="btn" id="waReset">إعادة ضبط الربط</button></div></div>` : ''}
     ${ST.sim ? '<button class="btn primary big" id="simLink" style="margin-top:16px">ربط تجريبي</button>' : ''}</div></div>`;
+    if ($('#waRetry')) $('#waRetry').onclick = async e => { e.currentTarget.disabled = true; try { await api('api/wa/retry', {}); toast('نحاول من جديد…') } catch (x) { toast('تعذّر: ' + x.message) } tick() };
+    if ($('#waReset')) $('#waReset').onclick = async () => { if (!await ask('إعادة ضبط الربط', 'نمسح جلسة الربط القديمة ونطلب رمز جديد. محادثاتك وعملاؤك وإعداداتك ما تنمسح.', 'إعادة الضبط')) return; try { await api('api/wa/reset', {}); toast('جاري طلب رمز جديد…') } catch (x) { toast('تعذّر: ' + x.message) } tick() };
     if ($('#simLink')) $('#simLink').onclick = () => api('api/sim/link', { me: '966500000000', history: window.SIM_HISTORY }).then(tick);
     return;
   }

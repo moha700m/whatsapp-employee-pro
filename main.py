@@ -14,7 +14,7 @@ from app import config
 def ensure_venv():
     """If launched with another Python (e.g. double-clicking main.py with the system Python),
     re-launch with the app's own .venv interpreter so all packages are present."""
-    if os.environ.get("WAE_NO_REEXEC") or "--smoke" in sys.argv or any(a.startswith("--persist-test") for a in sys.argv) or getattr(sys, "frozen", False):
+    if os.environ.get("WAE_NO_REEXEC") or "--smoke" in sys.argv or "--qr-test" in sys.argv or any(a.startswith("--persist-test") for a in sys.argv) or getattr(sys, "frozen", False):
         return
     venv = config.BASE_DIR / ".venv"
     exe_dir = venv / ("Scripts" if os.name == "nt" else "bin")
@@ -159,7 +159,35 @@ def persist_test(mode):
     except Exception: pass
     return 0
 
+def qr_test(limit=60):
+    """CI/support check: start the REAL engine (no simulator) in a temp folder and require a real WhatsApp QR within `limit` seconds."""
+    import tempfile, time
+    from app.launcher import Engine
+    from app import e2e
+    d = tempfile.mkdtemp(prefix="wae-qr-"); eng = Engine(d, fake=False); t0 = time.time(); st = {}
+    try:
+        eng.start(); c = e2e.Client(eng.url); c.login()
+        while time.time() - t0 < limit:
+            st = c.req("api/state")
+            if st.get("status") == "qr" and str(st.get("qr") or "").startswith("data:image/png;base64,"): break
+            time.sleep(1)
+        ok = st.get("status") == "qr" and bool(st.get("qr"))
+    finally: eng.stop()
+    log = ""
+    try: log = eng.log_path.read_text(encoding="utf-8", errors="replace")[-3000:]
+    except Exception: pass
+    msg = (f"QR TEST {'OK' if ok else 'FAILED'} v{config.APP_VERSION} after {time.time()-t0:.1f}s status={st.get('status')} "
+           f"qrlen={len(st.get('qr') or '')} error={st.get('error')}\n--- engine log ---\n{log}")
+    print(msg, flush=True)
+    try: config.LOG_DIR.mkdir(parents=True, exist_ok=True); (config.LOG_DIR / "qr-test.txt").write_text(msg, encoding="utf-8")
+    except Exception: pass
+    return 0 if ok else 3
+
 def main():
+    if "--qr-test" in sys.argv:
+        try: return qr_test()
+        except Exception:
+            startup_log("QR TEST FAILED:\n" + traceback.format_exc()); traceback.print_exc(); return 1
     for mode in ("write", "check"):
         if f"--persist-test={mode}" in sys.argv:
             try: return persist_test(mode)
