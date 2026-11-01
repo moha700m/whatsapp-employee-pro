@@ -458,14 +458,14 @@ async function renderEmp() {
     <label class="lbl" for="e5">رسالة التحويل</label><textarea id="e5" style="min-height:72px">${esc(ar.handoffMessage)}</textarea>
     <div class="grid g2" style="gap:8px"><div><label class="lbl" for="e6">ينتظر قبل الرد (ثانية)</label><input type="number" id="e6" min="0" max="600" value="${ar.delaySec}"></div>
     <div><label class="lbl" for="e7">أقل وقت بين ردّين لنفس العميل (دقيقة)</label><input type="number" id="e7" min="0" max="1440" value="${ar.cooldownMin}"></div>
-    <div><label class="lbl" for="e8">أقصى ردود للعميل باليوم</label><input type="number" id="e8" min="1" max="50" value="${ar.maxPerDay}"></div>
+    <div><label class="lbl" for="e8">أقصى ردود للعميل باليوم</label><input type="number" id="e8" min="1" max="200" value="${ar.maxPerDay}"></div>
     <div><label class="lbl" for="e9">يسكت إذا رديت أنت خلال (دقيقة)</label><input type="number" id="e9" min="0" max="240" value="${ar.ownerActiveMin}"></div></div>
     <p class="help-t" style="margin-top:10px">ما يرد أبداً على القروبات أو الحالات، ولا على أي عميل كتب «وقف».</p>
     <h3 style="margin-top:22px">حماية الرقم من الحظر</h3>
     <div class="notice g" style="font-size:14px">الموظف <b>ما يبدأ محادثة أبداً</b> — يرد بس على اللي كتب لك. يقرأ الرسالة، يطلع «يكتب…» بوقت يناسب طول الرد، ويترك فاصل عشوائي بين الردود.${e.guard ? `<br>اليوم: ${num(e.guard.day)} من ${num(e.guard.perDay)} رد · هالساعة: ${num(e.guard.hour)} من ${num(e.guard.perHour)}${e.guard.warm ? '<br><b>رقم مربوط جديد:</b> نبدأ بحد أقل ونزيده تدريجياً خلال أسبوع (تسخين).' : ''}` : ''}</div>
     ${SW('e10', ar.humanTyping !== false, 'يكتب مثل الإنسان', 'قراءة ← «يكتب…» ← إرسال، بأوقات طبيعية')}
     <div class="grid g2" style="gap:8px"><div><label class="lbl" for="e11">أقصى ردود بالساعة (كل العملاء)</label><input type="number" id="e11" min="1" max="60" value="${ar.maxPerHour ?? 20}"></div>
-    <div><label class="lbl" for="e12">أقصى ردود باليوم (كل العملاء)</label><input type="number" id="e12" min="1" max="200" value="${ar.maxTotalPerDay ?? 80}"></div></div>
+    <div><label class="lbl" for="e12">أقصى ردود باليوم (كل العملاء)</label><input type="number" id="e12" min="1" max="1000" value="${ar.maxTotalPerDay ?? 500}"></div></div>
     <button class="btn primary" id="esv" style="margin-top:16px">حفظ الإعدادات</button></div></div>
   <div class="card" style="margin-top:var(--s4)"><div style="display:flex;align-items:center;gap:12px"><div class="grow"><h3 style="margin:0">فحص الموظف</h3><p class="muted" style="font-size:14px;margin:4px 0 0">ما رد على أحد؟ اضغط ونقولك السبب بالضبط.</p></div><button class="btn primary" id="echk">افحص الحين</button></div><div id="echo"></div></div>
   <div class="grid g2" style="margin-top:var(--s4)"><div class="card"><h3>جرّب الموظف</h3><p class="muted" style="font-size:14px;margin-top:-6px">اكتب رسالة كأنك عميل وشوف وش بيرد. (ما ينرسل شي)</p>

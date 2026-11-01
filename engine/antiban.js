@@ -14,9 +14,9 @@ export function typingMs(text, { manual = false, rnd = Math.random } = {}) {
 export const readMs = (incoming, rnd = Math.random) => Math.min(6000, 1000 + rnd() * 3000 + String(incoming || '').length * 15);
 export const WARMUP = [[1, 15], [3, 30], [7, 60]];   // [days since linking, max auto replies per day]
 export function limits(ar, linkedAt, now = Date.now()) {
-  const days = linkedAt ? (now - linkedAt) / 864e5 : 99; let day = Math.min(200, Math.max(1, +ar.maxTotalPerDay || 80)), warm = false;
+  const days = linkedAt ? (now - linkedAt) / 864e5 : 99; let day = Math.min(1000, Math.max(1, +ar.maxTotalPerDay || 500)), warm = false;
   for (const [d, cap] of WARMUP) if (days < d) { if (cap < day) { day = cap; warm = true } break }
-  return { perHour: Math.min(60, Math.max(1, +ar.maxPerHour || 20)), perDay: day, warm, minGapMs: 20000 };
+  return { perHour: Math.min(200, Math.max(1, +ar.maxPerHour || 60)), perDay: day, warm, minGapMs: 20000 };
 }
 // sends: [{t, auto}] -> may we send one more auto reply now?
 export function canSend(sends, lim, now = Date.now()) {

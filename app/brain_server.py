@@ -104,9 +104,9 @@ def do_suggest(body):
     fa = AI.faq_answer(teach, texts[-1]) or AI.faq_answer(teach, text)
     if fa: out.append(fa)
     dl = str((kb.get("shop") or {}).get("delivery") or "").strip()
-    if intent == "delivery" and dl: add(dl.rstrip(".") + " 🌷")
+    if intent == "delivery" and dl: add(dl.rstrip("."))
     if intent == "status":
-        for x in ("أبشر 🌷 بشيك على طلبك الحين وأرد عليك خلال دقايق.", "طلبك عندنا وبإذن الله على موعده، بتأكد من وقت التوصيل وأبلغك 🌷", "حياك، عطني اسم صاحب الطلب أو رقمه وأتأكد لك فوراً."): add(x)
+        for x in ("أبشر، بشيك على طلبك الحين وأرد عليك خلال دقايق.", "طلبك عندنا وبإذن الله على موعده، بتأكد من وقت التوصيل وأبلغك 🌷", "حياك، عطني اسم صاحب الطلب أو رقمه وأتأكد لك فوراً."): add(x)
     else:
         for seed in range(10):
             r = think(text, str(body.get("customer", "")), kb=kb, rng=random.Random(seed)); add(r["reply"])

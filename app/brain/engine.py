@@ -1,30 +1,60 @@
 """Intent detection, entity extraction, lead scoring, objections, upsell, reply composer and price guard."""
 import random, re
+from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from app.brain.normalize import norm, fuzzy_in, any_in, sar, phone966
 from app.brain.knowledge import load_kb
 
-INTENTS = {  # ordered by priority
-    "complaint": ["شكوي", "ما وصل", "تاخر", "متاخر", "ذبلان", "ذابل", "خربان", "مو نفس الصوره", "سيء", "زعلان", "استرجاع", "فلوسي", "غلط"],
-    "human": ["ابي اكلم", "ابغي اكلم", "موظف", "المدير", "شخص حقيقي", "اتصل علي", "كلمني"],
-    "stop": ["لا ترسل", "وقف", "لا تراسلني", "الغاء الاشتراك", "stop"],
-    "order": ["ابي اطلب", "ابغي اطلب", "ابي احجز", "اطلب", "احجز", "ابي", "ابغي", "ودي", "جهزوا", "جهز لي", "اكد", "تمام اعتمد", "خلاص"],
-    "price": ["كم السعر", "بكم", "كم سعر", "السعر", "سعره", "الاسعار", "كم يكلف", "تكلفه", "كم"],
-    "delivery": ["توصيل", "توصلون", "توصل", "متي يوصل", "الدفع", "ادفع", "موقعكم", "وين المحل", "الدوام", "مفتوحين", "تحويل", "مدي", "رسوم", "تغليف", "مفاجاه", "بدون اسم", "حجز مسبق", "الغاء الطلب", "استبدال"],
-    "meaning": ["وش معني", "معني", "يرمز", "وش يعني"],
+INTENTS = {  # ordered by priority. Saudi/Gulf dialect, common typos, short words, English + Arabizi. All matched after norm().
+    "complaint": ["شكوي", "اشتكي", "ما وصل", "ماوصل", "للحين ما وصل", "تاخر", "تاخرتو", "متاخر", "ذبلان", "ذابل", "ذبل", "خربان", "مكسور", "مو نفس الصوره",
+                  "غير الصوره", "سيء", "سيئ", "زعلان", "استرجاع", "فلوسي", "غلط", "فيه مشكله", "عندي مشكله", "ما عجبني", "مو حلو", "complaint", "late", "problem"],
+    "human": ["ابي اكلم", "ابغي اكلم", "ابغى اكلم", "موظف", "المدير", "المسؤول", "صاحب المحل", "شخص حقيقي", "انسان", "اتصل علي", "اتصلو", "كلمني", "رقمكم", "رقم التواصل", "call me"],
+    "stop": ["لا ترسل", "وقف الرسايل", "لا تراسلني", "لا ترسلون", "الغاء الاشتراك", "stop", "unsubscribe"],
+    "status": ["وين طلبي", "طلبي وين", "متي يوصل طلبي", "وصل طلبي", "حاله الطلب", "حالة الطلب", "رقم الطلب", "طلبي جاهز", "جهز طلبي", "تتبع", "المندوب وين", "وين المندوب", "order status", "where is my order"],
+    "order": ["ابي اطلب", "ابغي اطلب", "ابغى اطلب", "ابي احجز", "ودي اطلب", "اطلب", "احجز", "اعتمد", "اكد الطلب", "جهزوا", "جهز لي", "تمام اعتمد", "ابي", "ابغي", "ابغى", "ودي", "عطني", "ابيه", "ابيها", "order", "abi", "abgha"],
+    "price": ["كم السعر", "بكم", "كم سعر", "كم سعره", "السعر", "سعره", "سعرها", "الاسعار", "اسعار", "اسعاركم", "كم يكلف", "تكلفه", "كم حقه", "كم حقها", "كم", "price", "prices", "how much", "kam", "bkam", "sa3r"],
+    "custom": ["تنسيق خاص", "حسب الطلب", "اختار الالوان", "لون معين", "تصميم خاص", "مثل هذي", "زي الصوره", "مثل الصوره", "بنفس الشكل", "custom"],
+    "photos": ["صور", "صوره", "ارسل صور", "ابي اشوف", "وريني", "فرجني", "نماذج", "شغلكم", "اعمالكم", "photos", "pics", "pictures"],
+    "location": ["موقعكم", "وين موقعكم", "وين المحل", "وينكم", "مكانكم", "لوكيشن", "اللوكيشن", "الموقع", "العنوان", "location", "address", "wenkom"],
+    "hours": ["متي تفتحون", "متي تسكرون", "تفتحون", "تسكرون", "الدوام", "دوامكم", "اوقات", "ساعات العمل", "مفتوحين", "فاتحين", "مسكرين", "open", "hours"],
+    "payment": ["الدفع", "ادفع", "طريقه الدفع", "تحويل", "مدي", "ابل باي", "apple pay", "stc pay", "تمارا", "تابي", "كاش", "فيزا", "دفع عند الاستلام", "payment", "pay"],
+    "delivery": ["توصيل", "توصلون", "توصل", "التوصيل", "متي يوصل", "يوصل اليوم", "نفس اليوم", "رسوم", "مندوب", "شحن", "تغليف", "مفاجاه", "بدون اسم", "حجز مسبق",
+                 "الغاء الطلب", "استبدال", "delivery", "deliver", "tawseel"],
+    "meaning": ["وش معني", "معني", "يرمز", "وش يعني", "رمز"],
     "care": ["كيف احافظ", "يعيش اطول", "اسقي", "ذبل بسرعه", "عنايه", "كم يعيش", "كم يقعد", "متي يذبل"],
-    "catalog": ["وش عندكم", "ايش عندكم", "المنيو", "الكتالوج", "صور", "نماذج", "المتوفر"],
-    "thanks": ["شكرا", "مشكور", "يعطيك العافيه", "تسلم", "الله يسعدك", "جزاك الله"],
-    "greeting": ["السلام عليكم", "سلام", "هلا", "مرحبا", "مساء الخير", "صباح الخير", "هاي", "اهلين"],
+    "occasion": ["زواج", "عرس", "زفاف", "ملكه", "خطوبه", "تخرج", "مولود", "مولوده", "ولاده", "مواليد", "عيد", "عيديه", "تهنئه", "مبروك", "مريض", "مستشفي", "سلامتك",
+                 "عزاء", "ميلاد", "عيد ميلاد", "يوم الام", "ترقيه", "نجاح", "اعتذار", "حب", "حبيبتي", "زوجتي", "امي", "wedding", "birthday", "graduation"],
+    "product": ["ورد", "ورده", "ورود", "بوكيه", "بوكيهات", "باقه", "باقات", "تنسيق", "تنسيقات", "هديه", "هدايا", "جوري", "توليب", "اوركيد", "روز", "زهور", "زهره",
+                "بوكس", "صندوق", "شوكولاته", "بالون", "flowers", "flower", "rose", "roses", "bouquet", "gift", "ward"],
+    "catalog": ["وش عندكم", "ايش عندكم", "وش تبيعون", "المنيو", "الكتالوج", "المتوفر", "وش المتوفر", "منتجاتكم", "catalog", "menu"],
+    "thanks": ["شكرا", "شكراً", "مشكور", "مشكورين", "يعطيك العافيه", "تسلم", "تسلمون", "الله يسعدك", "جزاك الله", "ما قصرت", "ماقصرتو", "thanks", "thank you", "thx", "tnx"],
+    "greeting": ["السلام عليكم", "السلام", "سلام", "هلا", "هلا والله", "مرحبا", "مرحبتين", "مساء الخير", "صباح الخير", "هاي", "اهلين", "اهلا", "حياكم", "يا هلا",
+                 "hi", "hello", "hey", "salam", "slm", "marhaba", "hala"],
 }
 OBJECTIONS = {"price": ["غالي", "غاليه", "مره غالي", "ارخص", "خصم", "تخفيض", "اقل"],
               "wait": ["بفكر", "افكر", "بشوف", "برجع لك", "بعدين", "مو الحين"],
               "trust": ["مضمون", "كيف اضمن", "تجربه سيئه", "مثل الصوره"]}
-SAFE_AUTO = {"greeting", "thanks", "delivery", "meaning", "care", "catalog"}   # allowed to auto-send after-hours
+SAFE_AUTO = {"greeting", "thanks", "delivery", "meaning", "care", "catalog", "product", "photos", "location", "hours", "payment", "occasion", "clarify"}   # allowed to auto-send after-hours
 
 NUM_WORDS = {"واحد": 1, "وحده": 1, "اثنين": 2, "ثنتين": 2, "ثلاث": 3, "ثلاثه": 3, "اربع": 4, "اربعه": 4, "خمس": 5, "خمسه": 5,
              "ست": 6, "سته": 6, "سبع": 7, "ثمان": 8, "عشر": 10, "عشره": 10, "درزن": 12, "دزينه": 12}
 WEEKDAYS = {"الاحد": 6, "الاثنين": 0, "الثلاثاء": 1, "الثلاثا": 1, "الاربعاء": 2, "الاربعا": 2, "الخميس": 3, "الجمعه": 4, "السبت": 5}
+
+def _tok(w):
+    w = re.sub(r"[^\w]", "", w)
+    for p in ("وال", "بال", "فال", "لل", "ال"):
+        if w.startswith(p) and len(w) - len(p) >= 2: return w[len(p):]
+    if len(w) > 4 and w[0] in "وب": return w[1:]
+    return w
+
+def _hit(k, n, toks):
+    """phrase → fuzzy phrase match; single word → whole-token match (with ال/و/ب stripped, tolerant to 1 typo on long words)."""
+    if " " in k: return fuzzy_in(k, n, 0.88)
+    kt = _tok(k)
+    for t in toks:
+        if t == kt or t == k: return True
+        if len(kt) >= 6 and abs(len(t) - len(kt)) <= 1 and SequenceMatcher(None, t, kt).ratio() >= 0.85: return True
+    return False
 
 class Brain:
     def __init__(self, kb=None, repo=None, rng=None):
@@ -33,12 +63,15 @@ class Brain:
 
     # ---------- understanding ----------
     def intents(self, text):
-        n = norm(text); found = []
+        n = norm(text); toks = [_tok(w) for w in n.split()]; found = []
         for it, kws in INTENTS.items():
-            if any(fuzzy_in(k, n, 0.9) if len(k) > 3 else re.search(r"(^|\s)" + re.escape(norm(k)) + r"($|\s)", n) for k in kws):
-                found.append(it)
+            if any(_hit(norm(k), n, toks) for k in kws): found.append(it)
         if "order" in found and "price" in found and not re.search(r"(اطلب|احجز|اكد|اعتمد|جهز)", n):
             found.remove("order")      # "ابي اعرف بكم" is a price question
+        if "order" in found and not re.search(r"(اطلب|احجز|اكد|اعتمد|جهز|order)", n) and ({"product", "occasion"} & set(found)):
+            found.remove("order")      # «ابي ورد» = interested, not a confirmed order yet
+        if "status" in found and "order" in found: found.remove("order")
+        if "price" in found and "delivery" in found and not self.find_products(text): found.remove("price")   # «التوصيل بكم»
         return found or ["unknown"]
 
     def objections(self, text):
@@ -167,7 +200,7 @@ class Brain:
         name = (customer or "").split()[0] if customer and not re.search(r"\d", customer) else ""
         if "stop" in intents: return "أبشر، ما راح نرسل لك شي بعد 🙏", "stop"
         if "complaint" in intents or "human" in intents: return self._t("complaint"), "handoff"
-        if after_hours and not (set(intents) & SAFE_AUTO): return self._t("after_hours", name=name), "after_hours"
+        if after_hours and (not (set(intents) & SAFE_AUTO) or {"order", "price"} & set(intents)): return self._t("after_hours", name=name), "after_hours"
         if "price" in objections:
             cheap = sorted([p for p in self.kb["products"] if p.get("price") and p["category"] in ("بوكيه",)], key=lambda p: p["price"])
             if cheap: return self._t("objection_price", cheaper=cheap[0]["name"], price=sar(cheap[0]["price"])), "objection"
@@ -208,10 +241,24 @@ class Brain:
             for f in self.kb["faq"]:
                 if any_in(f["q"], text, 0.9):
                     return self._t("delivery", answer=f["a"].replace("{location}", self.kb["shop"].get("location", "")).replace("{hours}", self.kb["shop"].get("hours", ""))), "delivery"
-        if "catalog" in intents: return self._t("catalog"), "catalog"
+        shop = self.kb["shop"]
+        if "status" in intents: return self._t("status"), "status"
+        if "location" in intents: return self._t("location", location=shop.get("location", "")), "location"
+        if "hours" in intents: return self._t("hours", hours=shop.get("hours", "")), "hours"
+        if "payment" in intents:
+            f = next((f for f in self.kb["faq"] if "الدفع" in f["q"]), None)
+            return (f["a"] if f else self._t("payment")), "payment"
+        if "delivery" in intents: return self._t("delivery_general"), "delivery"
+        if "custom" in intents: return self._t("custom"), "custom"
+        if "photos" in intents: return self._t("photos"), "photos"
+        if "product" in intents or "catalog" in intents:
+            cheap = sorted([p for p in self.kb["products"] if p.get("price") and p["category"] != "خدمات"], key=lambda p: p["price"])
+            frm = f" وتبدأ الأسعار من {sar(cheap[0]['price'])}" if cheap else ""
+            return self._t("catalog", from_price=frm), "catalog"
+        if "occasion" in intents: return self._t("occasion_general"), "occasion"
         if "thanks" in intents: return self._t("thanks"), "thanks"
         if "greeting" in intents: return self._t("greeting", name=name), "greeting"
-        return self._t("fallback", name=name), "fallback"
+        return self._t("clarify", name=name), "clarify"
 
     # ---------- guard ----------
     def allowed_prices(self):

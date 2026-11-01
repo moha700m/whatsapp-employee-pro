@@ -8,7 +8,7 @@
 import express from 'express'; import QRCode from 'qrcode'; import fs from 'fs'; import path from 'path'; import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { analyze } from './analyze.js'; import { csv, vcf, reportHTML } from './report.js';
-import { decide, AUTO_DEFAULTS, SKIP_AR, scheduleOpen, inWindow, hm, BAD_JID } from './employee.js';
+import { decide, AUTO_DEFAULTS, SKIP_AR, scheduleOpen, inWindow, hm, BAD_JID, migrateAuto } from './employee.js';
 import { campaign, OCCASIONS } from './campaigns.js';
 import { humanSend, limits, canSend } from './antiban.js';
 import * as CH from './channels.js';
@@ -45,13 +45,15 @@ for (const [k, v] of Object.entries({ chats: {}, contacts: {}, crm: {}, audit: [
 const DEF = {
   shopName: 'محل الورد', shopType: 'محل ورد', city: '', phone: '', about: '', delivery: '', logo: '', brand: '#0A7A3E',
   hoursFrom: '09:00', hoursTo: '23:00', tz: 'Asia/Riyadh', products: [],
-  templates: [{ k: 'ترحيب', t: 'هلا والله، نورتنا 🌷 كيف أقدر أخدمك؟' }, { k: 'أسعار', t: 'أسعار الباقات تبدأ من ١٥٠ ريال، تحب أرسل لك صور الخيارات؟' },
+  templates: [{ k: 'ترحيب', t: 'هلا والله، نورتنا. كيف أقدر أخدمك؟' }, { k: 'أسعار', t: 'أسعار الباقات تبدأ من ١٥٠ ريال، تحب أرسل لك صور الخيارات؟' },
     { k: 'تأكيد', t: 'تم تأكيد طلبك ✅ وموعد التوصيل …' }, { k: 'شكر', t: 'شكراً لثقتك فينا، نتشرف بخدمتك دايم 🌹' }],
   tags: ['جديد', 'مهتم', 'طلب', 'تم التوصيل', 'مميز'], followUpDays: 1, dormantDays: 30, hotScore: 60, notifyHot: true, notifyNew: true,
   aiEnabled: true, aiModel: 'auto', teach: null, aiTone: 'ودودة ومحترفة', sessionMinutes: 120, tourDone: false, hintsOff: [], theme: 'auto',
   autoReply: { ...AUTO_DEFAULTS }, notify: { on: true, msg: true, order: true, alert: true, sound: true, volume: 70, quiet: false, quietFrom: '23:00', quietTo: '08:00' },
 };
 store.settings = { ...DEF, ...(store.settings || {}), autoReply: { ...AUTO_DEFAULTS, ...(store.settings?.autoReply || {}) } };
+migrateAuto(store.settings.autoReply);
+for (const t of store.settings.templates || []) if (t.k === 'ترحيب' && t.t === 'هلا والله، نورتنا 🌷 كيف أقدر أخدمك؟') t.t = 'هلا والله، نورتنا. كيف أقدر أخدمك؟';
 if (['fixed', 'ai'].includes(store.settings.autoReply.mode) && store.settings.autoReply.mode === 'ai') store.settings.autoReply.mode = 'smart';
 const S = () => store.settings;
 let saveT; const save = () => { clearTimeout(saveT); const tmp = DATA + '.tmp'; const fd = fs.openSync(tmp, 'w'); fs.writeSync(fd, JSON.stringify(store)); fs.fsyncSync(fd); fs.closeSync(fd); fs.renameSync(tmp, DATA) };
@@ -199,10 +201,11 @@ const why = (c, reason, extra = {}) => { const t = SKIP_AR[reason] || reason; co
 const BATCH = new Map();   // jid -> { first, timer }
 const QUIET_MS = () => FAKE_FAST ? +(process.env.WAE_QUIET_MS || 400) : 10e3, CAP_MS = () => FAKE_FAST ? +(process.env.WAE_CAP_MS || 2000) : 45e3;
 const MEDIA_ONLY = t => /^\[(صورة|رسالة صوتية|ملصق|فيديو|ملف|موقع|جهة اتصال)\]$/.test(String(t || '').trim());
-const ACK = 'وصلت 🌷 بشوفها وأرد عليك';
+const CLARIFY = ['حيّاك، وش كان قصدك بالضبط؟ تبي تشوف الأسعار، التوصيل، ولا تطلب؟', 'حيّاك الله، وضّح لي أكثر: تبي الأسعار، ولا التوصيل، ولا تبي تطلب؟'];
+const ACK = 'وصلت، بشوفها وأرد عليك';
 const tOf = m => m.at || m.ts;
 function unanswered(c) {   // customer messages after our last outgoing message (auto or manual)
-  const lastOut = Math.max(0, ...c.messages.filter(m => m.fromMe).map(tOf));
+  const lastOut = Math.max(0, ...c.messages.filter(m => m.fromMe).map(tOf), ...(store.autoHist[c.jid]?.times || []));   // auto-send time in ms (WA timestamps are whole seconds)
   return c.messages.filter(m => !m.fromMe && tOf(m) > lastOut && Date.now() - tOf(m) < 12 * 3600e3).sort((x, y) => tOf(x) - tOf(y));
 }
 async function onIncoming(c, msg) {
@@ -232,11 +235,13 @@ async function flush(jid, tries = 0) {
     d = pre.action === 'skip' ? pre : { action: 'reply', reason: 'media', kind: 'media_ack', text: ACK };
     if (d.action !== 'skip' || d.reason === 'cooldown') alert('human', jid, `${c.label || 'عميل'} أرسل ${last.text} — شوفه ورد عليه`);
   } else {
-    const b = await brain('/think', { text: combined, customer: c.name, messages: msgsFor(c0, 8), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });   // rules + owner FAQ only
+    const b = await brain('/think', { text: combined, customer: c.name, messages: msgsFor(c0, 8), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) && !(Date.now() - (store.autoHist[jid]?.afterHoursAt || 0) < 14 * 3600e3) }, { ai: false });   // rules + owner FAQ only
     if (b && b.engine === 'ai') { b.reply = ''; b.safe_auto = false }
     if (b?.lead_score) store.crm[jid] = { ...store.crm[jid], score: Math.max(b.lead_score, store.crm[jid]?.score || 0) };
     d = decide(c0, trigger, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: b }); d.engine = b?.engine || 'rules';
   }
+  if (d.alertOwner) alert('human', jid, `يحتاج ردك: ${c.label || 'عميل'} — «${(combined || last.text).slice(0, 60)}»`);
+  console.log(new Date().toISOString(), 'AUTO think', `msgs=${list.length}`, `chars=${combined.length}`, `kind=${d.kind || d.reason}`, `action=${d.action}`);
   if (d.action === 'skip' && d.reason === 'cooldown') {   // defer, never drop
     const h = store.autoHist[jid] || { times: [] }, lastT = Math.max(0, ...h.times), waitMs = Math.max(1000, ar.cooldownMin * 60e3 - (Date.now() - lastT));
     console.log(new Date().toISOString(), 'AUTO deferred', `batch=${list.length}`, 'cooldown', `in=${Math.round(waitMs / 1000)}s`);
@@ -247,7 +252,7 @@ async function flush(jid, tries = 0) {
   // never the same text twice in a row: prefer something new, else stay quiet and tell the owner
   const prevAuto = [...c0.messages].filter(m => m.fromMe && m.auto).sort((x, y) => tOf(y) - tOf(x))[0];
   if (prevAuto && prevAuto.text === d.text && Date.now() - tOf(prevAuto) < 6 * 3600e3) {
-    const alt = [ar.message, ar.handoffMessage].find(t => t && t !== prevAuto.text);
+    const alt = [...CLARIFY, ar.message, ar.handoffMessage].find(t => t && t !== prevAuto.text && t !== d.text);
     if (d.action === 'handoff' || !alt) { alert('human', jid, `يحتاج ردك: ${c.label || 'عميل'} — «${(combined || last.text).slice(0, 60)}»`); console.log(new Date().toISOString(), 'AUTO batch', `msgs=${list.length}`, 'skip same_text'); return why(c, 'same_text') }
     d = { ...d, text: alt, kind: d.kind + '_alt' };
   }
@@ -276,7 +281,7 @@ async function sendAuto(jid, trigger, d, tries = 0) {
     keepSent(m); console.log(new Date().toISOString(), 'AUTO sent', d.action, `addr=${to.split('@')[1]}`); if (store.chats[jid]) store.chats[jid].autoWhy = { t: Date.now(), why: d.action === 'handoff' ? 'رد برسالة انتظار وحوّلها لك' : 'رد عليه', code: 'sent' };
     if (c.messages.some(x => x.fromMe && x.ts > trigger.ts && !x.auto)) { /* owner replied while we were typing — still sent; logged */ }
     sendLog(true); const r = addMsg(m); if (r) r.msg.auto = true; else { const x = c.messages.find(y => y.id === m?.key?.id); if (x) x.auto = true }
-    const h = store.autoHist[jid] ??= { times: [] }; h.times = [...h.times.filter(t => Date.now() - t < 864e5), Date.now()];
+    const h = store.autoHist[jid] ??= { times: [] }; h.times = [...h.times.filter(t => Date.now() - t < 864e5), Date.now()]; if (/^after_hours/.test(d.kind || '')) h.afterHoursAt = Date.now();
     const lb = resolve(c).label;
     if (d.action === 'handoff') { h.handoffAt = Date.now(); alert('human', jid, `يحتاج ردك: ${lb} — «${trigger.text.slice(0, 60)}»`) }
     audit(d.action === 'handoff' ? 'auto_handoff' : 'auto_reply', { jid, to: lb, kind: d.kind, len: d.text.length, preview: d.text.slice(0, 90), q: trigger.text.slice(0, 60), engine: d.engine || 'rules' });
@@ -340,6 +345,7 @@ async function connect() {
     });
     sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { chanSeen(m.key?.remoteJid); if (type === 'notify' || type === 'append') { const jj = canon(m.key?.remoteJid); if (jj && !BAD_JID(jj)) setImmediate(() => emit('msg', { jid: jj, fromMe: !!m.key?.fromMe })) }
       const r = addMsg(m); if (!m.key?.fromMe && type === 'notify') console.log(new Date().toISOString(), 'IN', `type=${type}`, `addr=${String(m.key?.remoteJid || '').split('@')[1] || '?'}`, r ? 'new' : (txt(m) ? 'dup' : 'not-a-message:' + Object.keys(unwrap(m.message)).filter(k => k !== 'messageContextInfo').slice(0, 2).join('+')), `employee=${S().autoReply?.enabled ? 'on' : 'off'}`);
+      if (r && type === 'notify' && r.msg.fromMe && state.me && phoneOf(r.c.jid) === state.me && !r.msg.auto) { console.log(new Date().toISOString(), 'IN own-number chat: employee does not answer yourself'); r.c.autoWhy = { t: Date.now(), why: SKIP_AR.own_number, code: 'own_number' }; emit('msg', { jid: r.c.jid, fromMe: true }) }
       if (r && type === 'notify') { r.msg.at = Date.now(); if (!r.msg.fromMe) { const rc = resolve(r.c); notify('msg', rc.label || rc.name || 'عميل', r.msg.text, rc.jid); onIncoming(rc, r.msg) } } } saveSoon() });
     sock.ev.on('lid-mapping.update', x => { for (const m of [].concat(x || [])) learnLid(m.lid, m.pn) });
     sock.ev.on('chats.upsert', cs => { (cs || []).forEach(c => { chanSeen(c.id, c.name); chatPn(c); chatMeta(c) }); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() });
@@ -479,7 +485,7 @@ r.get('/api/events', (q, s) => {   // live UI updates (Server-Sent Events); the 
   s.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); s.flushHeaders?.(); s.write('retry: 1500\nevent: hello\ndata: {}\n\n'); UIS.add(s); q.on('close', () => UIS.delete(s));
 });
 setInterval(() => { for (const set of [UIS, NOTS]) for (const s of set) try { s.write(': ping\n\n') } catch { set.delete(s) } }, 20e3).unref?.();
-r.post('/api/notify/test', (q, s) => { notify('msg', 'تجربة إشعار', 'كذا يوصلك الإشعار لما يكتب لك عميل 🌷', ''); s.json({ ok: true }) });
+r.post('/api/notify/test', (q, s) => { notify('msg', 'تجربة إشعار', 'كذا يوصلك الإشعار لما يكتب لك عميل', ''); s.json({ ok: true }) });
 r.get('/api/state', (q, s) => {
   const cs = chatsList(), ar = S().autoReply;
   s.json({ status: state.status, qr: state.qr, me: state.me, error: state.error, attempts: state.attempts, waitingSec: Math.round((Date.now() - state.since) / 1000), syncing: state.syncing, lastSync: state.lastSync, version: VERSION, sim: FAKE,
@@ -585,7 +591,7 @@ r.post('/api/settings', (q, s) => {
     if (['smart', 'fixed'].includes(a.mode)) ar.mode = a.mode;
     if (typeof a.handoff === 'boolean') ar.handoff = a.handoff; if (typeof a.humanTyping === 'boolean') ar.humanTyping = a.humanTyping;
     for (const k of ['message', 'handoffMessage']) if (typeof a[k] === 'string' && a[k].trim()) ar[k] = a[k].trim().slice(0, 600);
-    for (const [k, lo, hi] of [['delaySec', 0, 600], ['cooldownMin', 0, 1440], ['maxPerDay', 1, 50], ['ownerActiveMin', 0, 240], ['maxPerHour', 1, 60], ['maxTotalPerDay', 1, 200]]) if (a[k] !== '' && a[k] != null && Number.isFinite(+a[k])) ar[k] = Math.min(hi, Math.max(lo, +a[k]));
+    for (const [k, lo, hi] of [['delaySec', 0, 600], ['cooldownMin', 0, 1440], ['maxPerDay', 1, 200], ['ownerActiveMin', 0, 240], ['maxPerHour', 1, 200], ['maxTotalPerDay', 1, 1000]]) if (a[k] !== '' && a[k] != null && Number.isFinite(+a[k])) ar[k] = Math.min(hi, Math.max(lo, +a[k]));
     if (was !== ar.enabled) { audit(ar.enabled ? 'auto_reply_enabled' : 'auto_reply_disabled', { preview: { always: 'يرد دايم', offhours: 'يرد خارج الدوام', custom: `يرد من ${ar.from} إلى ${ar.to}` }[ar.schedule] }); if (!ar.enabled) { for (const t of pending.values()) clearTimeout(t); pending.clear() } }
   }
   saveSoon(); if (!b.tourDone && !b.hintsOff) audit('settings_changed', {}); s.json(cur);
@@ -610,7 +616,7 @@ r.get('/api/employee/check', async (q, s) => {   // «فحص الموظف»: eve
 });
 r.post('/api/employee/test', async (q, s) => {   // dry run: what would the employee answer? (sends nothing)
   const text = String(q.body?.text || '').slice(0, 500); if (!text.trim()) return s.status(400).json({ error: 'اكتب رسالة' });
-  const b = await brain('/think', { text, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });
+  const b = await brain('/think', { text, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) && !(Date.now() - (store.autoHist[jid]?.afterHoursAt || 0) < 14 * 3600e3) }, { ai: false });
   const fakeChat = { jid: 'test@s.whatsapp.net', messages: [] }; const msg = { fromMe: false, text, ts: Date.now() };
   const d = decide(fakeChat, msg, { settings: { ...S(), autoReply: { ...S().autoReply, enabled: true, schedule: 'always' } }, connected: true, history: {}, brain: b });
   s.json({ ...d, brain: !!b, intents: b?.intents || [] });

@@ -5,17 +5,20 @@ export const AUTO_DEFAULTS = {
   schedule: 'offhours',      // 'always' | 'offhours' (outside shop hours) | 'custom' (from→to)
   from: '23:00', to: '09:00',
   mode: 'smart',             // 'smart' = local Saudi brain answers simple questions | 'fixed' = one fixed message
-  message: 'هلا والله 🌷 وصلت رسالتك، ونرد عليك بأقرب وقت.',
+  message: 'هلا والله، وصلت رسالتك ونرد عليك بأقرب وقت.',
   handoff: true,             // orders / prices / complaints → polite hold + alert the owner
-  handoffMessage: 'أبشر 🌷 وصلت رسالتك، وبيرد عليك المسؤول خلال دقايق إن شاء الله.',
+  handoffMessage: 'أبشر، وصلت رسالتك وبيرد عليك المسؤول خلال دقايق إن شاء الله.',
   delaySec: 15,              // wait before replying (feels human, lets the owner jump in)
   cooldownMin: 2,            // min minutes between two auto replies to the same customer
-  maxPerDay: 6,              // max auto replies per customer per day
+  maxPerDay: 30,             // max auto replies per customer per day
   ownerActiveMin: 10,        // if the owner replied by hand within this window, stay quiet
-  maxPerHour: 20,            // anti-ban: all customers together, per hour
-  maxTotalPerDay: 80,        // anti-ban: all customers together, per day (lower while a new number warms up)
+  maxPerHour: 60,            // anti-ban: all customers together, per hour
+  maxTotalPerDay: 500,       // anti-ban: all customers together, per day (lower while a new number warms up)
   humanTyping: true,         // anti-ban: read → typing… → send, with human timing
 };
+// texts shipped as defaults before v2.4.2: upgraded only when the owner never changed them
+export const OLD_DEFAULTS = { message: ['هلا والله 🌷 وصلت رسالتك، ونرد عليك بأقرب وقت.'], handoffMessage: ['أبشر 🌷 وصلت رسالتك، وبيرد عليك المسؤول خلال دقايق إن شاء الله.'], maxPerDay: [6], maxPerHour: [20], maxTotalPerDay: [80] };
+export function migrateAuto(ar) { for (const [k, olds] of Object.entries(OLD_DEFAULTS)) if (olds.includes(ar[k])) ar[k] = AUTO_DEFAULTS[k]; return ar }
 export const BAD_JID = j => !j || j.endsWith('@g.us') || j.endsWith('@broadcast') || j === 'status@broadcast' || j.endsWith('@newsletter');
 export const hm = (d, tz) => new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Asia/Riyadh', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
 export const inWindow = (from, to, t) => from === to ? true : from < to ? (t >= from && t < to) : (t >= from || t < to);
@@ -53,7 +56,9 @@ export function decide(chat, msg, ctx) {
   const b = ctx.brain;
   if (b && b.intents?.includes('stop')) return skip('customer_said_stop');
   if (ar.handoff && b && b.handoff) {
-    if (h.handoffAt && now - h.handoffAt < 6 * 3600e3) return skip('already_handed_off');
+    // already handed off: never silent — answer with the rule reply (or a short holding line); the owner is alerted again by the caller
+    if (h.handoffAt && now - h.handoffAt < 6 * 3600e3) return { action: 'reply', reason: 'after_handoff', kind: 'after_handoff', alertOwner: true,
+      text: (b.safe_auto && b.reply) || 'وصلت رسالتك، والمسؤول بيرد عليك بأقرب وقت إن شاء الله.' };
     return { action: 'handoff', reason: b.kind, kind: b.kind, text: ar.handoffMessage };
   }
   if (ar.mode === 'smart' && b && b.reply) return { action: 'reply', reason: b.kind, kind: b.kind, text: b.reply };
@@ -62,4 +67,4 @@ export function decide(chat, msg, ctx) {
 export const SKIP_AR = { off: 'الموظف مطفي', not_customer: 'مو عميل (قروب/حالة)', from_me: 'رسالة منك', empty: 'رسالة بدون نص', old_message: 'رسالة قديمة',
   offline: 'الواتساب غير متصل', outside_schedule: 'خارج وقت عمل الموظف', owner_active: 'أنت ترد عليه بنفسك', cooldown: 'رد عليه قبل شوي', daily_limit: 'وصل حد الردود اليومي',
   customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك وما رد عليه أحد للحين', rate_limit: 'حماية الرقم: وصل حد الإرسال', same_text: 'رد عليه بنفس الكلام قبل شوي، خليناه لك',
-  off_before_send: 'انطفى الموظف قبل الإرسال', owner_replied: 'رديت عليه بنفسك قبل الموظف', not_first: 'هو ما راسلنا أول، الموظف ما يبدأ محادثات', send_failed: 'الإرسال فشل' };
+  off_before_send: 'انطفى الموظف قبل الإرسال', owner_replied: 'رديت عليه بنفسك قبل الموظف', not_first: 'هو ما راسلنا أول، الموظف ما يبدأ محادثات', send_failed: 'الإرسال فشل', own_number: 'هذي رسالة من رقمك نفسه، جرب من رقم ثاني' };

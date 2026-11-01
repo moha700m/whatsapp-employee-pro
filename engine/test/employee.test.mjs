@@ -10,11 +10,11 @@ test('smart reply', () => { const d = decide(chat(), msg(), ctx()); assert.equal
 test('fixed mode', () => assert.equal(decide(chat(), msg(), ctx({ ar: { mode: 'fixed' } })).text, AUTO_DEFAULTS.message));
 test('no groups / status / newsletters', () => { for (const j of ['1@g.us', 'status@broadcast', '1@newsletter']) assert.equal(decide({ jid: j, messages: [] }, msg(), ctx()).reason, 'not_customer') });
 test('handoff for orders', () => { const d = decide(chat(), msg('ابي اطلب'), ctx({ brain: { kind: 'order_collect', handoff: true, intents: ['order'] } })); assert.equal(d.action, 'handoff'); assert.equal(d.text, AUTO_DEFAULTS.handoffMessage) });
-test('handoff only once per 6h', () => assert.equal(decide(chat(), msg(), ctx({ brain: { handoff: true, intents: ['order'] }, history: { '966511110001@s.whatsapp.net': { times: [], handoffAt: NOW - 3600e3 } } })).reason, 'already_handed_off'));
+test('after a handoff: not the hold message again, but never silent (+ owner alert)', () => { const d = decide(chat(), msg(), ctx({ brain: { handoff: true, intents: ['order'] }, history: { '966511110001@s.whatsapp.net': { times: [], handoffAt: NOW - 3600e3 } } })); assert.equal(d.action, 'reply'); assert.equal(d.reason, 'after_handoff'); assert.ok(d.alertOwner && d.text) });
 test('stop respected', () => assert.equal(decide(chat(), msg('وقف'), ctx({ brain: { intents: ['stop'], handoff: true } })).reason, 'customer_said_stop'));
 test('cooldown and daily limit', () => {
   assert.equal(decide(chat(), msg(), ctx({ history: { '966511110001@s.whatsapp.net': { times: [NOW - 30e3] } } })).reason, 'cooldown');
-  assert.equal(decide(chat(), msg(), ctx({ history: { '966511110001@s.whatsapp.net': { times: Array.from({ length: 6 }, (_, i) => NOW - (i + 1) * 3600e3) } } })).reason, 'daily_limit');
+  assert.equal(decide(chat(), msg(), ctx({ history: { '966511110001@s.whatsapp.net': { times: Array.from({ length: 30 }, (_, i) => NOW - (i + 1) * 600e3) } } })).reason, 'daily_limit');
 });
 test('owner active → quiet, but own auto replies do not count', () => {
   assert.equal(decide(chat([{ fromMe: true, ts: NOW - 60e3 }]), msg(), ctx()).reason, 'owner_active');

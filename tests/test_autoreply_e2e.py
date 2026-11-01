@@ -78,3 +78,46 @@ def test_sticker_or_voice_gets_ack_and_alert(eng):
     cl.req("api/sim/media", {"jid": j, "kind": "sticker", "body": {"mimetype": "image/webp"}, "name": "عميل"})
     assert e2e.wait(lambda: _sends(cl, j), timeout=20) and "وصلت" in _sends(cl, j)[0]["text"]
     assert any(a["kind"] == "human" and a.get("jid") == j for a in cl.req("api/alerts"))
+
+@pytest.mark.parametrize("word", ["ورده", "ورد", "وردة", "ورررده 🌹", "بوكيه", "باقة", "تنسيق", "ك"])
+def test_single_word_gets_reply(eng, word):
+    cl, e = eng; j = "966500000701@s.whatsapp.net"
+    cl.req("api/sim/incoming", {"jid": j, "text": word, "name": "عميل"})
+    assert e2e.wait(lambda: _sends(cl, j), timeout=20), [a for a in cl.req("api/audit")][:5]
+    t = _sends(cl, j)[0]["text"]; assert t.strip() and "🌷" not in t
+    if word != "ك": assert "ورد" in t or "تنسيق" in t, t
+    else: assert "وش" in t or "خارج الدوام" in t, t
+
+def test_single_salam_gets_greeting(eng):
+    cl, e = eng; j = "966500000702@s.whatsapp.net"
+    cl.req("api/sim/incoming", {"jid": j, "text": "السلام", "name": "عميل"})
+    assert e2e.wait(lambda: _sends(cl, j), timeout=20)
+    assert any(w in _sends(cl, j)[0]["text"] for w in ("السلام", "هلا", "حياك"))
+
+def test_after_handoff_still_answers_and_alerts(eng):
+    cl, e = eng; j = "966500000703@s.whatsapp.net"
+    cl.req("api/settings", {"autoReply": {"enabled": True, "schedule": "always", "delaySec": 0, "humanTyping": False, "cooldownMin": 0}})
+    cl.req("api/sim/incoming", {"jid": j, "text": "ابي اطلب بوكيه جوري", "name": "عميل"}); assert e2e.wait(lambda: len(_sends(cl, j)) == 1, timeout=20)
+    cl.req("api/sim/incoming", {"jid": j, "text": "وين موقعكم", "name": "عميل"})
+    assert e2e.wait(lambda: len(_sends(cl, j)) == 2, timeout=20), cl.req("api/chats")
+    assert "موقع" in _sends(cl, j)[1]["text"]
+
+def test_new_defaults_daily_cap():
+    from pathlib import Path
+    src = (ENGINE / "employee.js").read_text(encoding="utf-8").split("OLD_DEFAULTS")[0]
+    assert "maxPerDay: 30" in src and "maxTotalPerDay: 500" in src and "🌷" not in src
+
+def test_own_number_hint(eng):
+    cl, e = eng; me = "966500000000@s.whatsapp.net"
+    cl.req("api/sim/incoming", {"jid": me, "text": "ورده", "key": {"fromMe": True}})
+    def hint(): return ((cl.req("api/chat?jid=" + me) or {}).get("autoWhy") or {}).get("code") == "own_number"
+    assert e2e.wait(hint, timeout=10)
+    assert not _sends(cl, me)
+
+def test_after_hours_text_only_once(eng):
+    cl, e = eng; j = "966500000704@s.whatsapp.net"
+    cl.req("api/settings", {"hoursFrom": "03:00", "hoursTo": "03:01", "autoReply": {"enabled": True, "schedule": "always", "delaySec": 0, "humanTyping": False, "cooldownMin": 0}})
+    cl.req("api/sim/incoming", {"jid": j, "text": "حسب الطلب", "name": "عميل"}); assert e2e.wait(lambda: len(_sends(cl, j)) == 1, timeout=20)
+    time.sleep(1.1); cl.req("api/sim/incoming", {"jid": j, "text": "تصميم خاص حسب الطلب", "name": "عميل"}); assert e2e.wait(lambda: len(_sends(cl, j)) == 2, timeout=20)
+    a, b = [o["text"] for o in _sends(cl, j)]
+    assert "خارج الدوام" in a and "خارج الدوام" not in b and a != b, (a, b)

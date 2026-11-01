@@ -20,7 +20,7 @@ def test_phone_and_currency():
 def test_greeting_and_price():
     assert think("السلام عليكم", "سارة", rng=R(), today=T)["kind"] == "greeting"
     r = think("بكم بوكيه الجوري؟", rng=R(), today=T)
-    assert r["intents"] == ["price"] and "150 ر.س" in r["reply"] and not r["guard_issues"]
+    assert "price" in r["intents"] and "150 ر.س" in r["reply"] and not r["guard_issues"]
 
 def test_full_order_extraction():
     r = think("ابي اطلب ٢ بوكيه توليب بكره الساعه ٥ العصر حي الفيصلية الدمام 0551234567", rng=R(), today=T)
