@@ -44,7 +44,7 @@ export function decide(chat, msg, ctx) {
   if (!ctx.connected) return skip('offline');
   if (!scheduleOpen(ar, s, now)) return skip('outside_schedule');
   // owner is handling it: he wrote by hand to this customer in the last few minutes (arrival time when we have it, so a wrong PC clock can't freeze the employee)
-  const T = m => m.at || m.ts, manual = chat.messages.filter(m => m.fromMe && !m.auto && m.id !== msg.id).sort((a, b) => T(b) - T(a))[0];
+  const T = m => m.at || m.ts, manual = chat.messages.filter(m => m.fromMe && !m.auto && (msg.id == null || m.id !== msg.id)).sort((a, b) => T(b) - T(a))[0];
   if (manual && now - T(manual) >= 0 && now - T(manual) < ar.ownerActiveMin * 60e3) return skip('owner_active');
   const h = ctx.history?.[chat.jid] || { times: [] };
   const today = h.times.filter(t => now - t < 864e5);

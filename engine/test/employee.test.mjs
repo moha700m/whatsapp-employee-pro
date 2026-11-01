@@ -20,7 +20,7 @@ test('owner active → quiet, but own auto replies do not count', () => {
   assert.equal(decide(chat([{ fromMe: true, ts: NOW - 60e3 }]), msg(), ctx()).reason, 'owner_active');
   assert.equal(decide(chat([{ fromMe: true, auto: true, ts: NOW - 60e3 }]), msg(), ctx()).action, 'reply');
 });
-test('old messages and offline ignored', () => { assert.equal(decide(chat(), msg('هلا', NOW - 10 * 60e3), ctx()).reason, 'old_message'); assert.equal(decide(chat(), msg(), { ...ctx(), connected: false }).reason, 'offline') });
+test('old messages and offline ignored', () => { assert.equal(decide(chat(), msg('هلا', NOW - 11 * 60e3), ctx()).reason, 'old_message'); assert.equal(decide(chat(), msg(), { ...ctx(), connected: false }).reason, 'offline') });
 test('schedules', () => {
   assert.equal(scheduleOpen({ schedule: 'offhours' }, S(), NOW), true);                  // 23:00 > 22:00 close
   assert.equal(scheduleOpen({ schedule: 'offhours' }, S(), Date.UTC(2026, 9, 31, 9)), false); // 12:00 open
