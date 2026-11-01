@@ -15,7 +15,7 @@ label{{display:block;margin:8px 0}}"""
 def page(body, title="إعداد - موظف واتساب"):
     return f"<html><head><style>{CSS}</style></head><body><div class=win><div class=tb>{title}</div>{body}</div></body></html>"
 W = page(f"""<div class=main><div class=side><img src="{b64('side_164.png')}"></div><div class=c><h2>هلا والله! خلنا نثبت «موظف واتساب»</h2>
-<p>بنثبت «موظف واتساب» 2.3.0 على جهازك.</p><p>البرنامج يرتب محادثات واتساب وطلبات محلك، ويجهز لك الردود، وما يرسل شي بدون موافقتك.</p><p>يفضّل تقفل البرامج الثانية قبل ما نكمل.</p></div></div>
+<p>بنثبت «موظف واتساب» 2.3.1 على جهازك.</p><p>البرنامج يرتب محادثات واتساب وطلبات محلك، ويجهز لك الردود، وما يرسل شي بدون موافقتك.</p><p>يفضّل تقفل البرامج الثانية قبل ما نكمل.</p></div></div>
 <div class=ft><span class="b d">التالي &gt;</span><span class=b>إلغاء</span></div>""")
 T = page(f"""<div class=hd><div><b>اختيار المهام الإضافية</b><span>وش المهام الإضافية اللي تبيها؟</span></div><img src="{b64('small_55.png')}" width=55 height=58></div>
 <div class=c><p>الاختصارات:</p><label>☑ حط اختصار على سطح المكتب</label></div><div style="flex:1"></div>

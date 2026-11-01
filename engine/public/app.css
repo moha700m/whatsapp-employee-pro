@@ -267,3 +267,5 @@ html[dir=rtl] .chatwrap .side-panel{transform:translateX(-105%)}
 .mk-p small{display:block;color:var(--muted);font-size:13px}.mk-p .go{font-size:14px;font-weight:700;color:var(--brand-t);white-space:nowrap}
 .mk-more{grid-column:1/-1;justify-self:start}
 @media (max-width:1000px){.mk-list{grid-template-columns:1fr}}
+
+.ainote{display:block;font-size:14px;color:var(--ink);margin:4px 0 2px;line-height:1.6}

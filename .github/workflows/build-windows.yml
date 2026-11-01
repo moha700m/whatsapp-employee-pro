@@ -95,17 +95,17 @@ jobs:
           if ($s.Length -ge 2GB) { throw "installer is over the 2 GB release limit" }
           $app = "$env:LOCALAPPDATA\Programs\WhatsAppEmployee"; $exe = "$app\WhatsAppEmployee.exe"; $data = "$env:LOCALAPPDATA\WhatsAppEmployee"
           # upgrade from the released v2.2.1: its data must survive installing this version on top
-          Invoke-WebRequest "https://github.com/moha700m/whatsapp-employee-pro/releases/download/v2.2.1/WhatsAppEmployee-Setup-2.2.1.exe" -OutFile old-setup.exe
+          Invoke-WebRequest "https://github.com/moha700m/whatsapp-employee-pro/releases/download/v2.3.0/WhatsAppEmployee-Setup-2.3.0.exe" -OutFile old-setup.exe
           $o = Start-Process old-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
-          if ($o.ExitCode -ne 0) { throw "v2.2.1 install failed" }
+          if ($o.ExitCode -ne 0) { throw "v2.3.0 install failed" }
           $ow = Start-Process $exe -ArgumentList "--persist-test=write" -Wait -PassThru
           if ($ow.ExitCode -ne 0) { throw "v2.2.1 persist write failed" }
           $p = Start-Process $s.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=install.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content install.log; throw "install failed" }
           if (-not (Test-Path $exe)) { throw "exe not installed" }
           $oc = Start-Process $exe -ArgumentList "--persist-test=check" -Wait -PassThru
-          if ($oc.ExitCode -ne 0) { throw "upgrade 2.2.1 -> new lost data" }
-          "upgrade from v2.2.1: data kept"
+          if ($oc.ExitCode -ne 0) { throw "upgrade 2.3.0 -> new lost data" }
+          "upgrade from v2.3.0: data kept"
           Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue   # start the fresh-install checks below from empty data
           if (-not (Test-Path "$app\llm\llama-server.exe")) { throw "installed app has no local AI" }
           $ai = Start-Process $exe -ArgumentList "--ai-test" -Wait -PassThru
@@ -136,7 +136,7 @@ jobs:
           "install / close-reopen / upgrade / uninstall / reinstall: data kept"
       - name: Zip portable app
         shell: pwsh
-        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.3.0.zip
+        run: Compress-Archive -Path dist\WhatsAppEmployee -DestinationPath dist\WhatsAppEmployee-portable-2.3.1.zip
       - uses: actions/upload-artifact@v7
         with: { name: WhatsAppEmployee-Setup, path: dist/WhatsAppEmployee-Setup-*.exe }
       - uses: actions/upload-artifact@v7

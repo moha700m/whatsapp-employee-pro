@@ -15,7 +15,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1', FAKE_FAST = FAKE && process.env.HUMAN_TYPING !== '1';
-const VERSION = process.env.APP_VERSION || '2.3.0';
+const VERSION = process.env.APP_VERSION || '2.3.1';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------
@@ -176,12 +176,13 @@ let state = { status: 'starting', qr: null, me: null, syncing: false, lastSync: 
 async function onIncoming(c, msg) {
   if (c.isGroup || msg.fromMe || BAD_JID(c.jid)) return;
   if (Date.now() - msg.ts > 5 * 60e3) return;
-  const b = await brain('/think', { text: msg.text, customer: c.name, messages: msgsFor(c, 6), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: !!S().autoReply?.enabled });
+  const b = await brain('/think', { text: msg.text, customer: c.name, messages: msgsFor(c, 6), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });   // auto-reply: rules + owner FAQ only, never model text
   const sc = Math.max(keywordScore(c), b?.lead_score || 0);
   store.crm[c.jid] = { ...store.crm[c.jid], score: Math.max(sc, store.crm[c.jid]?.score || 0) };
   if (S().notifyHot && sc >= S().hotScore) alert('hot', c.jid, `عميل مهتم: ${c.label || c.name || 'عميل'} — «${msg.text.slice(0, 60)}»`);
   else if (S().notifyNew && c.messages.filter(m => !m.fromMe).length <= 1) alert('new', c.jid, `عميل جديد: ${c.label || c.name || 'عميل'}`);
-  const d = decide(c, msg, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: b });
+  if (b && b.engine === 'ai') { b.reply = ''; b.safe_auto = false }   // belt and braces: model text is never auto-sent
+  const d = decide(c, msg, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: b }); d.engine = b?.engine || 'rules';
   if (d.action === 'skip') { if (d.reason !== 'off') audit('auto_skip', { jid: c.jid, to: c.label || c.name || 'عميل', why: SKIP_AR[d.reason] || d.reason }); return }
   const ar = { ...AUTO_DEFAULTS, ...S().autoReply };
   clearTimeout(pending.get(c.jid));
@@ -208,7 +209,7 @@ async function sendAuto(jid, trigger, d, tries = 0) {
     const h = store.autoHist[jid] ??= { times: [] }; h.times = [...h.times.filter(t => Date.now() - t < 864e5), Date.now()];
     const lb = resolve(c).label;
     if (d.action === 'handoff') { h.handoffAt = Date.now(); alert('human', jid, `يحتاج ردك: ${lb} — «${trigger.text.slice(0, 60)}»`) }
-    audit(d.action === 'handoff' ? 'auto_handoff' : 'auto_reply', { jid, to: lb, kind: d.kind, len: d.text.length, preview: d.text.slice(0, 90), q: trigger.text.slice(0, 60) });
+    audit(d.action === 'handoff' ? 'auto_handoff' : 'auto_reply', { jid, to: lb, kind: d.kind, len: d.text.length, preview: d.text.slice(0, 90), q: trigger.text.slice(0, 60), engine: d.engine || 'rules' });
     saveSoon();
   } catch (e) {
     audit('auto_reply_failed', { jid, err: String(e.message).slice(0, 80) });
@@ -502,7 +503,7 @@ r.post('/api/settings', (q, s) => {
 });
 r.post('/api/employee/test', async (q, s) => {   // dry run: what would the employee answer? (sends nothing)
   const text = String(q.body?.text || '').slice(0, 500); if (!text.trim()) return s.status(400).json({ error: 'اكتب رسالة' });
-  const b = await brain('/think', { text, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: true });
+  const b = await brain('/think', { text, after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });
   const fakeChat = { jid: 'test@s.whatsapp.net', messages: [] }; const msg = { fromMe: false, text, ts: Date.now() };
   const d = decide(fakeChat, msg, { settings: { ...S(), autoReply: { ...S().autoReply, enabled: true, schedule: 'always' } }, connected: true, history: {}, brain: b });
   s.json({ ...d, brain: !!b, intents: b?.intents || [] });

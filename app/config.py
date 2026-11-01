@@ -1,6 +1,6 @@
 """Paths and constants. No secrets live here."""
 APP_NAME = "موظف واتساب"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 import os
 from pathlib import Path
 

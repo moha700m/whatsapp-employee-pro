@@ -30,10 +30,10 @@ async function renderTeach(box) {
   box.innerHTML = `<div class="teach"><div class="tmain">
     <div class="tintro"><div><h3>علّم موظفك</h3><p>كل اللي تكتبه هنا يمشي عليه الموظف في الردود المقترحة والرد التلقائي. التعديل ينحفظ لحاله.</p></div><span id="tsv" class="tsv ok">محفوظ ✓</span></div>
     <div class="tcard aist"><div class="grow"><b>الذكاء المحلي على جهازك</b><div class="ailine"><i class="dot ${cls}"></i><span id="ail">${esc(txt)}</span></div>
-      <small class="muted" id="aim">${a.ram_gb ? `ذاكرة الجهاز ${num(Math.round(a.ram_gb))} ج.ب` : ''}${a.avg_ms ? ` · الرد ياخذ تقريباً ${num((a.avg_ms / 1000).toFixed(1))} ث` : ''}</small></div>
+      <small class="ainote">الرد التلقائي يرسل من ردودك وأسئلتك وقواعدك بس. الذكاء يكتب اقتراحات تراجعها وترسلها بنفسك، ومسودات التسويق وملف العميل.</small><small class="muted" id="aim">${a.ram_gb ? `ذاكرة الجهاز ${num(Math.round(a.ram_gb))} ج.ب` : ''}${a.avg_ms ? ` · الرد ياخذ تقريباً ${num((a.avg_ms / 1000).toFixed(1))} ث` : ''}</small></div>
       <label class="switch"><input type="checkbox" id="aim1" ${SET.aiModel !== 'off' ? 'checked' : ''} aria-label="تشغيل الذكاء المحلي"><span></span></label></div>
     ${TSECS.map(([k, t, h], i) => `<section class="tcard" id="ts-${k}"><header><span class="tn">${num(i + 1)}</span><div><h4>${t}</h4><p>${h}</p></div></header><div class="tbody" data-k="${k}"></div></section>`).join('')}
-  </div><aside class="ttry"><div class="tcard"><header><span class="tn"><svg aria-hidden="true"><use href="#i-spark"/></svg></span><div><h4>جرّب</h4><p>اكتب رسالة كأنك عميل وشوف وش بيرد الموظف الحين. ما ينرسل شي.</p></div></header>
+  </div><aside class="ttry"><div class="tcard"><header><span class="tn"><svg aria-hidden="true"><use href="#i-spark"/></svg></span><div><h4>جرّب</h4><p>اكتب رسالة كأنك عميل وشوف الرد المقترح. ما ينرسل شي.</p></div></header>
     <textarea id="tq" rows="3" aria-label="رسالة تجربة من عميل" placeholder="مثلاً: كم سعر بوكيه الجوري؟ وتوصلون العليا؟"></textarea>
     <div class="tqs">${['السلام عليكم عندكم توليب؟', 'كم سعر بوكيه الجوري؟', 'غالي مره', 'ابي ارجع الطلب'].map(x => `<button class="chip" data-q="${esc(x)}">${esc(x)}</button>`).join('')}</div>
     <button class="btn primary" id="tgo" style="width:100%;margin-top:10px">جرّب الرد</button><div id="ta" class="tans" aria-live="polite"></div></div></aside></div>`;

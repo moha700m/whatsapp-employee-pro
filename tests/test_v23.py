@@ -93,3 +93,14 @@ def test_marketing_ranked_actions_drafts_only(eng):
     r = cl.req("api/mkt/draft", {"goal": "متابعة", "template": "هلا {الاسم} 🌷"}); assert r["text"]
     assert cl.req("api/mkt/opened", {"jid": "966500000201@s.whatsapp.net"})["opened"] == 1
     audit = json.dumps(cl.req("api/audit"), ensure_ascii=False); assert "manual_send" not in audit and "auto_reply" not in audit   # nothing was sent
+
+def test_auto_reply_never_uses_model_text(eng, monkeypatch):
+    """v2.3.1: the employee's automatic replies come only from rules / the owner's FAQ (the model is for suggestions he reviews)."""
+    cl, d, e = eng
+    cl.req("api/sim/link", {"me": "966500000000", "history": {"chats": [], "messages": []}})
+    cl.req("api/settings", {"aiModel": "auto", "teach": {"faq": [{"q": "متى تفتحون", "a": "نفتح من ٤ العصر 🌷"}]}, "autoReply": {"enabled": True, "schedule": "always", "delaySec": 0, "humanTyping": False}})
+    cl.req("api/sim/incoming", {"jid": "966500000301@s.whatsapp.net", "text": "السلام عليكم عندكم ورد جوري؟", "name": "عميل"})
+    cl.req("api/sim/incoming", {"jid": "966500000302@s.whatsapp.net", "text": "متى تفتحون؟", "name": "عميل"})
+    au = e2e.wait(lambda: (a := [x for x in cl.req("api/audit") if x["type"] in ("auto_reply", "auto_handoff")]) and len(a) >= 2 and a, timeout=40)
+    assert all(x.get("engine") == "rules" for x in au), au
+    assert any("نفتح من ٤ العصر" in (x.get("preview") or "") for x in au)
