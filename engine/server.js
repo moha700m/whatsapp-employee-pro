@@ -20,7 +20,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1', FAKE_FAST = FAKE && process.env.HUMAN_TYPING !== '1';
-const VERSION = process.env.APP_VERSION || '2.4.1';
+const VERSION = process.env.APP_VERSION || '2.4.2';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------

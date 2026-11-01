@@ -25,21 +25,43 @@ def scaled(kind, vol):
     with wave.open(str(out), "wb") as w: w.setparams(p); w.writeframes(a.tobytes())
     _cache[key] = out; return out
 
+import base64, re
+_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+_AR = re.compile("[\u0600-\u06ff]")
+
+def clean(t):
+    t = _BAD.sub("", str(t or ""))
+    return ("\u200f" + t) if _AR.search(t) else t   # RLM: Arabic lines start right-to-left
+
 def toast_xml(ev):
     launch = "wae://chat/" + ev.get("jid", "") if ev.get("jid") else "wae://open"
-    return (f'<toast activationType="protocol" launch="{escape(launch)}"><visual><binding template="ToastGeneric">'
-            f'<text>{escape(ev.get("title", ""))}</text><text>{escape(ev.get("body", ""))}</text></binding></visual><audio silent="true"/></toast>')
+    q = lambda v: escape(v, {'"': "&quot;"})
+    return (f'<toast activationType="protocol" launch="{q(launch)}"><visual lang="ar-SA"><binding template="ToastGeneric">'
+            f'<text>{q(clean(ev.get("title", "")))}</text><text>{q(clean(ev.get("body", "")))}</text></binding></visual><audio silent="true"/></toast>')
+
+def ps_script(xml, dump=None):
+    """PowerShell script with the toast XML embedded as base64 of UTF-8 bytes: no codepage can garble it."""
+    b = base64.b64encode(xml.encode("utf-8")).decode("ascii")
+    s = (f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b}'));")
+    if dump:   # test hook: write the decoded text back as UTF-8 and stop
+        d = base64.b64encode(str(dump).encode("utf-8")).decode("ascii")
+        return s + f"[IO.File]::WriteAllText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{d}')), $xml, (New-Object Text.UTF8Encoding $false))"
+    return s + ("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
+                "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"
+                "$x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml($xml);"
+                f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{AUMID}').Show([Windows.UI.Notifications.ToastNotification]::new($x))")
+
+def ps_args(script):
+    # -EncodedCommand takes base64 of UTF-16LE, so the whole command line is pure ASCII
+    return ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode("ascii")]
 
 def show(ev, log=print):
     SHOWN.append(ev)
     if os.name != "nt": log(f"NOTIFY would show {ev.get('kind')} sound={ev.get('sound')} vol={ev.get('volume')}"); return
     try:
-        ps = ("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
-              "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"
-              "$x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml([Console]::In.ReadToEnd());"
-              f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{AUMID}').Show([Windows.UI.Notifications.ToastNotification]::new($x))")
-        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps], input=toast_xml(ev).encode("utf-8"),
-                       creationflags=0x08000000, timeout=15, capture_output=True)
+        r = subprocess.run(ps_args(ps_script(toast_xml(ev))), stdin=subprocess.DEVNULL, creationflags=0x08000000, timeout=15, capture_output=True)
+        if r.returncode: log(f"NOTIFY toast failed: exit {r.returncode}")
     except Exception as e: log(f"NOTIFY toast failed: {type(e).__name__}")
     if ev.get("sound"):
         try:
