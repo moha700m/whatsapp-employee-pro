@@ -40,11 +40,12 @@ export function decide(chat, msg, ctx) {
   if (BAD_JID(chat.jid) || chat.isGroup) return skip('not_customer');
   if (msg.fromMe) return skip('from_me');
   if (!msg.text || !msg.text.trim()) return skip('empty');
-  if (now - msg.ts > 5 * 60e3) return skip('old_message');
+  if (now - (msg.at || msg.ts) > 10 * 60e3) return skip('old_message');   // arrival time on this PC; server time only for history
   if (!ctx.connected) return skip('offline');
   if (!scheduleOpen(ar, s, now)) return skip('outside_schedule');
-  const manual = chat.messages.filter(m => m.fromMe && !m.auto && m.ts <= now).sort((a, b) => b.ts - a.ts)[0];
-  if (manual && now - manual.ts < ar.ownerActiveMin * 60e3) return skip('owner_active');
+  // owner is handling it: he wrote by hand to this customer in the last few minutes (arrival time when we have it, so a wrong PC clock can't freeze the employee)
+  const T = m => m.at || m.ts, manual = chat.messages.filter(m => m.fromMe && !m.auto && m.id !== msg.id).sort((a, b) => T(b) - T(a))[0];
+  if (manual && now - T(manual) >= 0 && now - T(manual) < ar.ownerActiveMin * 60e3) return skip('owner_active');
   const h = ctx.history?.[chat.jid] || { times: [] };
   const today = h.times.filter(t => now - t < 864e5);
   if (today.length && now - Math.max(...today) < ar.cooldownMin * 60e3) return skip('cooldown');
@@ -60,4 +61,5 @@ export function decide(chat, msg, ctx) {
 }
 export const SKIP_AR = { off: 'الموظف مطفي', not_customer: 'مو عميل (قروب/حالة)', from_me: 'رسالة منك', empty: 'رسالة بدون نص', old_message: 'رسالة قديمة',
   offline: 'الواتساب غير متصل', outside_schedule: 'خارج وقت عمل الموظف', owner_active: 'أنت ترد عليه بنفسك', cooldown: 'رد عليه قبل شوي', daily_limit: 'وصل حد الردود اليومي',
-  customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك', rate_limit: 'حماية الرقم: وصل حد الإرسال' };
+  customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك وما رد عليه أحد للحين', rate_limit: 'حماية الرقم: وصل حد الإرسال',
+  off_before_send: 'انطفى الموظف قبل الإرسال', owner_replied: 'رديت عليه بنفسك قبل الموظف', not_first: 'هو ما راسلنا أول، الموظف ما يبدأ محادثات', send_failed: 'الإرسال فشل' };

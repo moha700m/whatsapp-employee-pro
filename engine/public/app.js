@@ -3,7 +3,7 @@
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let CSRF = '', SET = {}, ST = {}, CRM = {}, CL = [], CH = null, PAGE = 'home', lastSig = '', FILTER = 'all', OCCS = [];
-const PAGES = [['home', 'الرئيسية'], ['chats', 'المحادثات'], ['sales', 'الطلبات والعملاء'], ['mkt', 'التسويق'], ['emp', 'الموظف'], ['set', 'الإعدادات']];
+const PAGES = [['home', 'الرئيسية'], ['chats', 'المحادثات'], ['sales', 'الطلبات والعملاء'], ['mkt', 'التسويق'], ['chan', 'القناة'], ['emp', 'الموظف'], ['set', 'الإعدادات']];
 const STAGES = ['جديد', 'قيد التجهيز', 'تم التوصيل', 'ملغي'];
 const toast = t => { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('on'), 2800) };
 const ago = t => { if (!t) return ''; const d = (Date.now() - t) / 6e4; if (d < 1) return 'الحين'; if (d < 60) return Math.floor(d) + ' د'; if (d < 1440) return Math.floor(d / 60) + ' س'; return Math.floor(d / 1440) + ' يوم' };
@@ -120,13 +120,13 @@ async function tick() {
   if (PAGE === 'chats') { await loadChats(); if (CH) drawThread() }
 }
 async function notify() { try { const a = await api('api/alerts'); const n = a.find(x => !x.read); if (n) { toast(n.text); if (window.Notification?.permission === 'granted' && document.hidden) new Notification(SET.shopName || 'تنبيه', { body: n.text }) } } catch { } }
-const KIND = { hot: ['r', 'فرصة'], new: ['b', 'جديد'], human: ['w', 'يحتاج ردك'] };
+const KIND = { hot: ['r', 'فرصة'], new: ['b', 'جديد'], human: ['w', 'يحتاج ردك'], channel: ['g', 'القناة'] };
 async function toggleAlerts() {
   const p = $('#alertsPop'); $('#helpPop').hidden = true; if (!p.hidden) return p.hidden = true; const A = await api('api/alerts');
   p.innerHTML = `<div style="display:flex;align-items:center;padding:6px 8px"><b class="grow">التنبيهات</b>${A.some(a => !a.read) ? '<button class="btn sm" id="ra">تعليم الكل كمقروء</button>' : ''}</div>` +
     (A.length ? A.map(a => `<div class="row" data-j="${esc(a.jid)}" tabindex="0"><span class="chip ${(KIND[a.kind] || KIND.new)[0]}">${(KIND[a.kind] || KIND.new)[1]}</span><div class="grow"><div style="${a.read ? '' : 'font-weight:700'}">${esc(a.text)}</div><small class="muted">${ago(a.t)}</small></div></div>`).join('') : '<div class="empty"><b>ما فيه تنبيهات</b>أول ما يكتب عميل مهتم أو جديد ينبهك هنا.</div>');
   p.hidden = false; if ($('#ra')) $('#ra').onclick = async () => { await api('api/alerts/read', {}); p.hidden = true; tick() };
-  p.querySelectorAll('.row').forEach(r => r.onclick = r.onkeydown = e => { if (e.type === 'keydown' && e.key !== 'Enter') return; p.hidden = true; openChat(r.dataset.j) });
+  p.querySelectorAll('.row').forEach(r => r.onclick = r.onkeydown = e => { if (e.type === 'keydown' && e.key !== 'Enter') return; p.hidden = true; r.dataset.j && r.dataset.j !== 'null' && r.dataset.j !== 'undefined' ? openChat(r.dataset.j) : go('chan') });
 }
 function toggleHelp() {
   const p = $('#helpPop'); $('#alertsPop').hidden = true; if (!p.hidden) return p.hidden = true;
@@ -143,7 +143,7 @@ function go(p) {
   if (!PAGES.find(x => x[0] === p)) p = 'home'; PAGE = p; history.replaceState(null, '', '#' + p);
   $$('[data-p]').forEach(b => { b.classList.toggle('on', b.dataset.p === p); b.setAttribute('aria-current', b.dataset.p === p ? 'page' : 'false') });
   $$('.page').forEach(s => s.hidden = s.id !== 'p-' + p); showHint(p);
-  const R = { home: renderHome, chats: renderChats, sales: renderSales, mkt: renderMkt, emp: renderEmp, set: renderSet }[p];
+  const R = { home: renderHome, chats: renderChats, sales: renderSales, mkt: renderMkt, chan: renderChan, emp: renderEmp, set: renderSet }[p];
   loadSettings().then(R, () => { $('#p-' + p).innerHTML = errBox('البرنامج ما يرد الحين', () => go(p)) });
 }
 // ---------- per-screen hints (skippable, re-openable from «؟»)
@@ -152,6 +152,7 @@ const HINTS = {
   chats: ['المحادثات', 'كل محادثاتك القديمة والجديدة. اختر عميل، وتحت خانة الرد تلقى ردود مقترحة من المساعد وردودك الجاهزة. ما ينرسل شي إلا لما تضغط «إرسال» وتأكد.'],
   sales: ['الطلبات والعملاء', 'كل الطلبات المسجّلة وحالتها، ومسار العملاء من «جديد» إلى «تم التوصيل». غيّر حالة الطلب من هنا، وتصنيف العميل من ملفه داخل المحادثة.'],
   mkt: ['التسويق', 'كل يوم نرتب لك أهم ٥ خطوات تسويق، ومعها رسالة جاهزة. تفتح محادثة العميل وترسل بنفسك، وحدة وحدة.'],
+  chan: ['القناة', 'انشر عروضك وتنسيقاتك لكل متابعين قناتك مرة وحدة. خذ فكرة جاهزة، خل الذكاء يكتبها، وأنت تراجع وتضغط «انشر». ما ينتشر شي لحاله.'],
   emp: ['الموظف', 'الموظف يرد على عملائك تلقائياً لما تشغّله: يرحّب ويجاوب الأسئلة البسيطة، وإذا العميل يبي يطلب أو يسأل عن سعر أو عنده شكوى يقوله «لحظات» وينبهك ترد بنفسك. مطفي لين تشغّله أنت.'],
   set: ['الإعدادات', 'بيانات المحل، قائمة الأسعار اللي يعتمد عليها المساعد، الردود الجاهزة، التنبيهات، قفل البرنامج، والسجل.'],
 };
@@ -167,6 +168,7 @@ const TOUR = [
   { t: 'المحادثات', b: 'هنا كل العملاء. افتح أي محادثة، اختر رد مقترح أو اكتب ردك، واضغط «إرسال».', el: '[data-tour=tab-chats]' },
   { t: 'الطلبات والعملاء', b: 'الطلبات اللي تسجلها (أو يطلعها المساعد من المحادثة) وحالتها، ومبيعاتك.', el: '[data-tour=tab-sales]' },
   { t: 'التسويق', b: 'حملات المناسبات، الرسائل الجماعية كمسودة، وترجيع العملاء القدامى.', el: '[data-tour=tab-mkt]' },
+  { t: 'القناة', b: 'قناة واتساب حقتك: أفكار منشورات جاهزة، كتابة بالذكاء، وتنشر بنفسك بعد ما تأكد.', el: '[data-tour=tab-chan]' },
   { t: 'الموظف (الرد الآلي)', b: 'شغّله ويرد على العملاء بنفسه، ويحوّل لك الطلبات والأسعار والشكاوى. هذا الزر يوريك حالته دايم.', el: '[data-tour=emp]' },
   { t: 'التنبيهات', b: 'لما يكتب عميل جاهز يشتري أو يحتاج ردك، يطلع لك تنبيه هنا.', el: '[data-tour=bell]' },
   { t: 'المساعدة', b: 'تبي الشرح مرة ثانية؟ اضغط علامة الاستفهام في أي وقت.', el: '[data-tour=help]' },
@@ -297,7 +299,7 @@ async function drawThread(full) {
     th.innerHTML = `<div class="th-head"><button class="icon-btn th-back" id="tbk" aria-label="رجوع للمحادثات"><svg aria-hidden="true"><use href="#i-x"/></svg></button><div class="av" style="--h:${hue(c.jid)}">${ini(who(c))}</div><div class="grow"><b class="ell" style="display:block">${esc(who(c))}</b><small class="muted">${c.name ? PN(c) : (c.disp ? '' : 'رقمه مخفي من واتساب')}</small></div>
      <label class="sr" for="cst" hidden>حالة المحادثة</label><select id="cst" aria-label="حالة المحادثة"><option value="open">مفتوحة</option><option value="pending">معلّقة</option><option value="resolved">منتهية</option></select>
      <button class="icon-btn info" id="pt" aria-label="معلومات العميل والطلبات" title="معلومات العميل والطلبات"><svg aria-hidden="true"><use href="#i-info"/></svg></button></div>
-     <div class="autobar" id="ab" hidden><span class="spin"></span>الموظف بيرد عليه خلال ثواني — إذا رديت أنت يلغي رده.</div>
+     <div class="autobar" id="ab" hidden><span class="spin"></span>الموظف بيرد عليه خلال ثواني — إذا رديت أنت يلغي رده.</div><div class="autowhy" id="aw" hidden></div>
      <div class="msgs" id="ms" aria-live="polite"></div>
      <div class="composer" style="position:relative"><div class="sugs" id="sg"></div><div class="slash" id="sl" hidden></div>
       <div class="bar"><textarea id="tx" rows="1" placeholder="اكتب ردك هنا… (اكتب / للردود الجاهزة)" aria-label="نص الرد"></textarea><button class="btn primary" id="sd"><svg aria-hidden="true"><use href="#i-send"/></svg>إرسال</button></div></div>`;
@@ -309,7 +311,7 @@ async function drawThread(full) {
     $('#tx').onkeydown = e => { const sl = $('#sl'); if (!sl.hidden && e.key === 'Enter') { e.preventDefault(); sl.querySelector('[data-i]')?.click() } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() };
     $('#sd').onclick = send; drawSugs(); drawPanel(c); suggest();
   }
-  $('#ab').hidden = !c.pendingAuto;
+  $('#ab').hidden = !c.pendingAuto; { const w = c.autoWhy, el = $('#aw'); el.hidden = !w || c.pendingAuto || !SET.autoReply?.enabled || Date.now() - w.t > 864e5; if (w) { el.className = 'autowhy ' + (/^(sent|queued)$/.test(w.code) ? 'ok' : 'no'); el.textContent = (/^(sent|queued)$/.test(w.code) ? 'الموظف: ' : 'الموظف ما رد لأن ') + w.why + ' · ' + clock(w.t) } }
   const sig = c.messages.length + ':' + (c.messages.at(-1)?.id || ''); if (sig === lastSig) return; lastSig = sig; let pd = ''; const ms = $('#ms');
   ms.innerHTML = c.messages.length ? c.messages.map(m => { const d = new Date(m.ts).toDateString(); const sep = d !== pd ? `<div class="daysep">${fmtD(m.ts)}</div>` : ''; pd = d;
     return sep + `<div class="m ${m.fromMe ? 'me' : 'them'} ${m.auto ? 'auto' : ''}">${m.auto ? '<span class="who"><svg aria-hidden="true"><use href="#i-bot"/></svg>رد الموظف</span>\n' : ''}${m.media ? MEDIA(m) : ''}${m.media && /^\[(صورة|فيديو|رسالة صوتية|ملصق|ملف)\]$/.test(m.text) ? '' : esc(m.text)}<time>${fmtT(m.ts)}</time></div>` }).join('') : '<div class="empty">ما فيه رسائل</div>';
@@ -457,6 +459,7 @@ async function renderEmp() {
     <div class="grid g2" style="gap:8px"><div><label class="lbl" for="e11">أقصى ردود بالساعة (كل العملاء)</label><input type="number" id="e11" min="1" max="60" value="${ar.maxPerHour ?? 20}"></div>
     <div><label class="lbl" for="e12">أقصى ردود باليوم (كل العملاء)</label><input type="number" id="e12" min="1" max="200" value="${ar.maxTotalPerDay ?? 80}"></div></div>
     <button class="btn primary" id="esv" style="margin-top:16px">حفظ الإعدادات</button></div></div>
+  <div class="card" style="margin-top:var(--s4)"><div style="display:flex;align-items:center;gap:12px"><div class="grow"><h3 style="margin:0">فحص الموظف</h3><p class="muted" style="font-size:14px;margin:4px 0 0">ما رد على أحد؟ اضغط ونقولك السبب بالضبط.</p></div><button class="btn primary" id="echk">افحص الحين</button></div><div id="echo"></div></div>
   <div class="grid g2" style="margin-top:var(--s4)"><div class="card"><h3>جرّب الموظف</h3><p class="muted" style="font-size:14px;margin-top:-6px">اكتب رسالة كأنك عميل وشوف وش بيرد. (ما ينرسل شي)</p>
     <div class="bar" style="margin-top:10px"><input id="et" placeholder="مثلاً: متى تفتحون؟" aria-label="رسالة تجربة"><button class="btn" id="etb">جرّب</button></div><div id="eto" style="margin-top:12px"></div></div>
    <div class="card"><h3>آخر شغل الموظف</h3><div id="elog" class="audit"><div class="skel"></div></div></div></div>`;
@@ -468,6 +471,12 @@ async function renderEmp() {
   $('#esv').onclick = async () => { try { SET = await api('api/settings', { autoReply: body() }); await tick(); toast('انحفظ ✓'); renderEmp() } catch { toast('تعذّر الحفظ') } };
   const tryIt = async () => { const t = $('#et').value.trim(); if (!t) return $('#et').focus(); try { const j = await api('api/employee/test', { text: t });
     $('#eto').innerHTML = j.action === 'skip' ? `<div class="notice">ما بيرد: ${esc(j.reason === 'customer_said_stop' ? 'العميل طلب ما نراسله' : j.reason)}</div>` : `<div class="notice ${j.action === 'handoff' ? '' : 'g'}"><b>${j.action === 'handoff' ? 'بيحوّله لك ويرد:' : 'بيرد:'}</b><div style="white-space:pre-wrap;margin-top:4px">${esc(j.text)}</div></div>` } catch (x) { toast('تعذّر: ' + x.message) } };
+  $('#echk').onclick = async () => { const o = $('#echo'); o.innerHTML = '<div class="skel" style="height:120px;margin-top:12px"></div>';
+    try { const j = await api('api/employee/check'); const AR = { auto_reply: 'رد', auto_handoff: 'رد وحوّله لك', auto_skip: 'ما رد', auto_reply_failed: 'فشل', auto_reply_disabled: 'توقف' };
+      o.innerHTML = `<div class="notice ${j.ok ? 'g' : ''}" style="margin-top:12px">${j.ok ? 'كل شي سليم، الموظف بيرد على أول رسالة توصل ✓' : 'فيه شي يمنع الموظف يرد، شوف اللي بالأحمر تحت'}</div>
+      <ul class="chk">${j.checks.map(c => `<li class="${c.ok ? 'ok' : 'no'}"><span aria-hidden="true">${c.ok ? '✓' : '✕'}</span>${esc(c.text)}</li>`).join('')}</ul>
+      ${j.recent.length ? `<h4 style="margin:14px 0 6px">آخر قرارات الموظف</h4>${j.recent.map(a => `<div class="row"><span class="chip ${a.type === 'auto_skip' ? 'w' : /fail|disabled/.test(a.type) ? 'x' : 'g'}">${AR[a.type] || a.type}</span><div class="grow">${esc(a.to || '')} <small class="muted">${esc(a.why)}</small></div><small class="muted">${ago(a.t)}</small></div>`).join('')}` : '<p class="muted">ما وصلت رسائل للموظف للحين.</p>'}` }
+    catch (e) { o.innerHTML = `<p class="err">${esc(e.message)}</p>` } };
   $('#etb').onclick = tryIt; $('#et').onkeydown = e => { if (e.key === 'Enter') tryIt() };
   try { const l = (await api('api/audit')).filter(a => /^auto_/.test(a.type)).slice(0, 12); $('#elog').innerHTML = l.length ? l.map(auditRow).join('') : '<div class="empty"><b>ما رد على أحد للحين</b>أول ما يرد يطلع هنا.</div>' } catch { $('#elog').innerHTML = '<p class="err">تعذّر تحميل السجل</p>' }
 }

@@ -1,3 +1,4 @@
+import re
 """Starts the local brain + the WhatsApp engine (bundled Node) and returns the UI URL.
 All user data lives in the per-user data folder (survives restarts, upgrades and uninstall)."""
 import json, os, secrets, shutil, socket, subprocess, sys, time, urllib.request
@@ -34,6 +35,18 @@ def http_json(url, data=None, headers=None, timeout=5):
     req = urllib.request.Request(url, data=None if data is None else json.dumps(data).encode(), headers={"content-type": "application/json", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r: return json.loads(r.read().decode("utf-8"))
 
+_SECRET = re.compile(r"SessionEntry|SessionRecord|privKey|pubKey|rootKey|chainKey|baseKey|ephemeralKeyPair|remoteIdentityKey|lastRemoteEphemeralKey|pendingPreKey|registrationId|currentRatchet|indexInfo|messageKeys|_chains|<Buffer|Closing session|Opening session|closed session|Bad MAC", re.I)
+def scrub_log(p, max_bytes=5 << 20):
+    """Remove any libsignal session dump (keys) an older version let into engine.log, and keep the log small."""
+    try:
+        p = Path(p)
+        if not p.exists(): return
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        if _SECRET.search(raw) or len(raw) > max_bytes:
+            keep = [l for l in raw.splitlines() if not _SECRET.search(l) and not re.fullmatch(r"\s*[\]\[{}(),]*\s*|\s+\w+:.*", l)]
+            p.write_text("\n".join(keep[-20000:]) + "\n", encoding="utf-8")
+    except Exception: pass
+
 class Engine:
     def __init__(self, data_dir=None, fake=False, port=None, extra_env=None, log_path=None):
         self.data = Path(data_dir or user_data_dir()) / "wa"; self.data.mkdir(parents=True, exist_ok=True)
@@ -46,7 +59,7 @@ class Engine:
         self.brain.start(); port = self.port or free_port()
         env = dict(os.environ, DATA_DIR=str(self.data), PORT=str(port), TOKEN=self.token, BRAIN_URL=self.brain.url, BRAIN_KEY=self.brain.key,
                    APP_VERSION=config.APP_VERSION, EXIT_WITH_STDIN="1", **({"FAKE_WA": "1"} if self.fake else {}), **self.extra)
-        self.log_path.parent.mkdir(parents=True, exist_ok=True); self._log = open(self.log_path, "a", encoding="utf-8")
+        self.log_path.parent.mkdir(parents=True, exist_ok=True); scrub_log(self.log_path); self._log = open(self.log_path, "a", encoding="utf-8")
         flags = 0x08000000 if os.name == "nt" else 0       # CREATE_NO_WINDOW
         self.proc = subprocess.Popen([find_node(), str(engine_dir() / "server.js")], cwd=str(engine_dir()), env=env, stdin=subprocess.PIPE,
                                      stdout=self._log, stderr=subprocess.STDOUT, creationflags=flags)

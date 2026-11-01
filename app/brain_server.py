@@ -234,6 +234,21 @@ def do_mkt_draft(body):
     except Exception: pass
     return {"text": base, "engine": "rules"}
 
+def do_chan_draft(body):
+    """«اكتب منشور» for the owner's WhatsApp Channel: short Saudi post with one clear CTA. AI if on, else the ready template. Never sends."""
+    base = str(body.get("template", ""))[:800]; idea = str(body.get("idea", ""))[:300]; kind = str(body.get("kind", "text"))
+    if not llm_on(body): return {"text": base, "engine": "rules"}
+    kb = make_kb(body); teach = body.get("teach") or {}
+    try:
+        t = LLM.chat([{"role": "system", "content": "أنت تكتب منشورات قناة واتساب لمحل ورد سعودي باللهجة السعودية العامية. المنشور ٢ إلى ٤ أسطر قصيرة، يبدأ بالفكرة مباشرة، "
+                                                    "فيه إيموجي ورد واحد أو اثنين، وينتهي بطلب واحد واضح مثل «راسلنا على الخاص». لا تذكر أسعار. لا تستخدم الفصحى. اكتب المنشور فقط."
+                                                    + (" هذا تعليق على صورة أو فيديو، خله قصير." if kind in ("image", "video") else "") + (" هذا سؤال تصويت، اكتب السؤال فقط بسطر واحد." if kind == "poll" else "")},
+                      {"role": "user", "content": f"الفكرة: {idea}\nاسم المحل: {kb['shop'].get('name','')}\nمسودة تقدر تحسنها:\n{base}"}], max_tokens=160, temperature=0.6, wait=30)
+        t = AI.clean(t).strip()
+        if t and not AI.guard(Brain(kb=kb), t, teach) and not re.search(r"\d{3,}", t) and len(t) < 500: return {"text": t, "engine": "ai"}
+    except Exception: pass
+    return {"text": base, "engine": "rules"}
+
 def do_ai_status(body):
     return LLM.status() if LLM else {"available": False, "reason": "غير مفعّل", "state": "unavailable"}
 
@@ -251,7 +266,7 @@ def do_kb(_):
     kb = default_kb()
     return {"products": [{k: p.get(k) for k in ("name", "aliases", "price", "unit", "category")} for p in kb["products"]], "shop": kb["shop"]}
 
-ROUTES = {"/think": do_think, "/suggest": do_suggest, "/extract": do_extract, "/kb": do_kb, "/profile": do_profile, "/insight": do_insight, "/occasions": do_occasions, "/plan_text": do_plan_text, "/ai/status": do_ai_status, "/ai/try": do_ai_try, "/mkt_draft": do_mkt_draft, "/teach_defaults": lambda b: AI.DEFAULT_TEACH}
+ROUTES = {"/think": do_think, "/suggest": do_suggest, "/extract": do_extract, "/kb": do_kb, "/profile": do_profile, "/insight": do_insight, "/occasions": do_occasions, "/plan_text": do_plan_text, "/ai/status": do_ai_status, "/ai/try": do_ai_try, "/mkt_draft": do_mkt_draft, "/chan_draft": do_chan_draft, "/teach_defaults": lambda b: AI.DEFAULT_TEACH}
 
 class BrainServer:
     def __init__(self, key, port=0, llm=True):

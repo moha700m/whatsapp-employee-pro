@@ -1,12 +1,17 @@
 // موظف واتساب — local engine. Runs on 127.0.0.1 inside the desktop app.
 // WhatsApp link via Baileys (full history sync), local JSON store, local Saudi brain (Python, offline).
 // Nothing is sent unless the owner presses «إرسال», or the owner switched the auto-reply employee ON.
+// SECURITY: libsignal prints whole sessions («Closing session: SessionEntry {… privKey, rootKey …}») with console.*; never let key material reach engine.log.
+{ const SECRET = /SessionEntry|privKey|rootKey|chainKey|baseKey|ephemeralKeyPair|remoteIdentityKey|pendingPreKey|Closing session|Opening session|Removing old closed session|Closing open session|Session error|Bad MAC|Failed to decrypt/i;
+  const bad = a => a.some(x => (typeof x === 'string' && SECRET.test(x)) || (x && typeof x === 'object' && (Buffer.isBuffer(x) || x instanceof Uint8Array || /SessionEntry|SessionRecord/.test(x.constructor?.name || '') || ('_chains' in x) || ('indexInfo' in x))));
+  for (const k of ['log', 'info', 'warn', 'error', 'debug', 'trace']) { const o = console[k].bind(console); console[k] = (...a) => { if (bad(a)) return; o(...a) } } }
 import express from 'express'; import QRCode from 'qrcode'; import fs from 'fs'; import path from 'path'; import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { analyze } from './analyze.js'; import { csv, vcf, reportHTML } from './report.js';
 import { decide, AUTO_DEFAULTS, SKIP_AR, scheduleOpen, inWindow, hm, BAD_JID } from './employee.js';
 import { campaign, OCCASIONS } from './campaigns.js';
 import { humanSend, limits, canSend } from './antiban.js';
+import * as CH from './channels.js';
 import { isLid, isPn, bare, normJid, fmtPhone, searchForms } from './people.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -15,7 +20,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1', FAKE_FAST = FAKE && process.env.HUMAN_TYPING !== '1';
-const VERSION = process.env.APP_VERSION || '2.3.1';
+const VERSION = process.env.APP_VERSION || '2.4.0';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------
@@ -36,7 +41,7 @@ function backup() {   // one snapshot per day, keep the last 14
   } catch { }
 }
 const store = load();
-for (const [k, v] of Object.entries({ chats: {}, contacts: {}, crm: {}, audit: [], alerts: [], auth: {}, ai: {}, autoHist: {}, lidMap: {}, plan: {}, wa: {}, sends: [] })) store[k] ??= v;
+for (const [k, v] of Object.entries({ chats: {}, contacts: {}, crm: {}, audit: [], alerts: [], auth: {}, ai: {}, autoHist: {}, lidMap: {}, plan: {}, wa: {}, sends: [], chan: { known: {}, drafts: [], reminders: [], posts: {} } })) store[k] ??= v;
 const DEF = {
   shopName: 'محل الورد', shopType: 'محل ورد', city: '', phone: '', about: '', delivery: '', logo: '', brand: '#0A7A3E',
   hoursFrom: '09:00', hoursTo: '23:00', tz: 'Asia/Riyadh', products: [],
@@ -173,9 +178,11 @@ const msgsFor = (c, n = 40) => [...c.messages].sort((a, b) => a.ts - b.ts).slice
 // ---------------- incoming: alerts + the auto-reply employee ----------------
 const pending = new Map();   // jid -> timer (one scheduled auto reply per customer)
 let state = { status: 'starting', qr: null, me: null, syncing: false, lastSync: null, since: Date.now(), error: null, attempts: 0 }, realSend = null, realPresence = null, realRead = null, SOCK = null;
+const why = (c, reason, extra = {}) => { const t = SKIP_AR[reason] || reason; console.log(new Date().toISOString(), 'AUTO skip', reason, extra.detail || ''); const ch = store.chats[c.jid]; if (ch) ch.autoWhy = { t: Date.now(), why: t, code: reason };
+  if (reason !== 'off') audit('auto_skip', { jid: c.jid, to: c.label || c.name || 'عميل', why: t, code: reason, ...extra }); saveSoon() };
 async function onIncoming(c, msg) {
   if (c.isGroup || msg.fromMe || BAD_JID(c.jid)) return;
-  if (Date.now() - msg.ts > 5 * 60e3) return;
+  // freshness uses the time the message ARRIVED on this PC (a wrong PC clock or time zone used to drop every message silently)
   const b = await brain('/think', { text: msg.text, customer: c.name, messages: msgsFor(c, 6), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });   // auto-reply: rules + owner FAQ only, never model text
   const sc = Math.max(keywordScore(c), b?.lead_score || 0);
   store.crm[c.jid] = { ...store.crm[c.jid], score: Math.max(sc, store.crm[c.jid]?.score || 0) };
@@ -183,7 +190,9 @@ async function onIncoming(c, msg) {
   else if (S().notifyNew && c.messages.filter(m => !m.fromMe).length <= 1) alert('new', c.jid, `عميل جديد: ${c.label || c.name || 'عميل'}`);
   if (b && b.engine === 'ai') { b.reply = ''; b.safe_auto = false }   // belt and braces: model text is never auto-sent
   const d = decide(c, msg, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: b }); d.engine = b?.engine || 'rules';
-  if (d.action === 'skip') { if (d.reason !== 'off') audit('auto_skip', { jid: c.jid, to: c.label || c.name || 'عميل', why: SKIP_AR[d.reason] || d.reason }); return }
+  if (d.action === 'skip') { if (/^(already_handed_off|cooldown|daily_limit)$/.test(d.reason)) alert('human', c.jid, `يحتاج ردك: ${c.label || c.name || 'عميل'} — «${msg.text.slice(0, 60)}»`); return why(c, d.reason) }
+  console.log(new Date().toISOString(), 'AUTO queued', d.action, d.kind || '');
+  if (store.chats[c.jid]) store.chats[c.jid].autoWhy = { t: Date.now(), why: d.action === 'handoff' ? 'بيرد برسالة انتظار ويحوّلها لك' : 'بيرد بعد ثواني', code: 'queued' };
   const ar = { ...AUTO_DEFAULTS, ...S().autoReply };
   clearTimeout(pending.get(c.jid));
   pending.set(c.jid, setTimeout(() => { pending.delete(c.jid); sendAuto(c.jid, msg, d).catch(() => {}) }, Math.max(0, ar.delaySec) * 1000));
@@ -193,17 +202,21 @@ const sendLog = auto => { store.sends.push({ t: Date.now(), auto }); store.sends
 async function sendAuto(jid, trigger, d, tries = 0) {
   const c = store.chats[jid]; if (!c) return;
   const ar = { ...AUTO_DEFAULTS, ...S().autoReply };
-  if (!ar.enabled) return audit('auto_skip', { jid, why: 'انطفى الموظف قبل الإرسال' });
-  if (c.messages.some(m => m.fromMe && m.ts > trigger.ts)) return audit('auto_skip', { jid, to: resolve(c).label, why: 'رديت عليه قبل الموظف' });
-  if (!c.messages.some(m => !m.fromMe)) return audit('auto_skip', { jid, why: 'ما راسلنا أول — الموظف ما يبدأ محادثات' });
-  if (!realSend || state.status !== 'connected') return audit('auto_reply_failed', { jid, err: 'الواتساب غير متصل' });
+  const C = resolve(c);
+  if (!ar.enabled) return why(C, 'off_before_send');
+  // «you already replied»: only a MANUAL message that arrived after the customer's message (by arrival time; our own auto replies don't count)
+  const tAt = trigger.at || trigger.ts; if (c.messages.some(m => m.fromMe && !m.auto && m.at && m.at > tAt)) return why(C, 'owner_replied');
+  if (!c.messages.some(m => !m.fromMe)) return why(C, 'not_first');
+  if (!realSend || state.status !== 'connected') { audit('auto_reply_failed', { jid, err: 'الواتساب غير متصل' }); return why(C, 'offline') }
   const lim = limits(ar, store.wa.linkedAt); if (FAKE_FAST) lim.minGapMs = 0; const ok = canSend(store.sends, lim);
   if (!ok.ok && ok.wait && tries < 6) { pending.set(jid, setTimeout(() => { pending.delete(jid); sendAuto(jid, trigger, d, tries + 1).catch(() => {}) }, ok.wait)); return }
-  if (!ok.ok) { if (d.action === 'handoff') alert('human', jid, `يحتاج ردك: ${resolve(c).label} — «${trigger.text.slice(0, 60)}»`); return audit('auto_skip', { jid, to: resolve(c).label, why: 'حماية الرقم: ' + (ok.why || 'تهدئة') }) }
+  if (!ok.ok) { alert('human', jid, `يحتاج ردك: ${C.label} — «${trigger.text.slice(0, 60)}»`); return why(C, 'rate_limit', { detail: ok.why || 'تهدئة' }) }
+  const to = trigger.rjid && /@(lid|s\.whatsapp\.net)$/.test(trigger.rjid) ? trigger.rjid : jid;   // reply to the exact address the customer wrote from (LID or phone)
   try {
     const m = ar.humanTyping !== false && !FAKE_FAST
-      ? await humanSend({ jid, text: d.text, send: realSend, presence: realPresence, read: realRead, readKey: lastIncomingKey(c), incoming: trigger.text })
-      : await realSend(jid, { text: d.text });
+      ? await humanSend({ jid: to, text: d.text, send: realSend, presence: realPresence, read: realRead, readKey: lastIncomingKey(c), incoming: trigger.text })
+      : await realSend(to, { text: d.text });
+    keepSent(m); console.log(new Date().toISOString(), 'AUTO sent', d.action, `addr=${to.split('@')[1]}`); if (store.chats[jid]) store.chats[jid].autoWhy = { t: Date.now(), why: d.action === 'handoff' ? 'رد برسالة انتظار وحوّلها لك' : 'رد عليه', code: 'sent' };
     if (c.messages.some(x => x.fromMe && x.ts > trigger.ts && !x.auto)) { /* owner replied while we were typing — still sent; logged */ }
     sendLog(true); const r = addMsg(m); if (r) r.msg.auto = true; else { const x = c.messages.find(y => y.id === m?.key?.id); if (x) x.auto = true }
     const h = store.autoHist[jid] ??= { times: [] }; h.times = [...h.times.filter(t => Date.now() - t < 864e5), Date.now()];
@@ -212,12 +225,14 @@ async function sendAuto(jid, trigger, d, tries = 0) {
     audit(d.action === 'handoff' ? 'auto_handoff' : 'auto_reply', { jid, to: lb, kind: d.kind, len: d.text.length, preview: d.text.slice(0, 90), q: trigger.text.slice(0, 60), engine: d.engine || 'rules' });
     saveSoon();
   } catch (e) {
-    audit('auto_reply_failed', { jid, err: String(e.message).slice(0, 80) });
+    audit('auto_reply_failed', { jid, err: String(e.message).slice(0, 80) }); why(C, 'send_failed', { detail: String(e.message).slice(0, 80) });
     const fails = store.audit.filter(a => a.type === 'auto_reply_failed' && Date.now() - a.t < 36e5).length;
     if (fails >= 3 && S().autoReply.enabled) { S().autoReply.enabled = false; audit('auto_reply_disabled', { preview: 'إيقاف تلقائي لحماية الرقم: أخطاء إرسال متكررة' }); alert('human', jid, 'وقّفنا الموظف مؤقتاً لحماية رقمك (أخطاء إرسال متكررة). شغّله من صفحة الموظف إذا كل شي تمام.') }
   }
 }
 // ---------------- WhatsApp connection ----------------
+const SENT = new Map();   // id -> sent WAMessage, so Baileys can answer retry receipts (else the customer sees «waiting for this message»)
+const keepSent = m => { if (m?.key?.id && m.message) { SENT.set(m.key.id, m); if (SENT.size > 500) SENT.delete(SENT.keys().next().value) } };
 let fake = null, connecting = false, profileIdx = 0, failsNoQr = 0, retryT = null;
 // Ubuntu/Chrome is what WhatsApp accepts for QR linking (the "Desktop" profiles get 428 Connection Terminated before any QR).
 const PROFILES = [B => B.Browsers.ubuntu('Chrome'), B => B.Browsers.appropriate ? B.Browsers.appropriate('Chrome') : B.Browsers.ubuntu('Chrome'), B => B.Browsers.macOS('Chrome')];
@@ -237,7 +252,7 @@ async function connect() {
       const makeWASocket = typeof B.default === 'function' ? B.default : B.makeWASocket;
       const { state: auth, saveCreds } = await B.useMultiFileAuthState(path.join(DIR, 'auth')); const { version } = await B.fetchLatestBaileysVersion().catch(() => ({}));
       sock = makeWASocket({ auth, version, logger: pino({ level: 'silent' }), browser: PROFILES[profileIdx % PROFILES.length](B), syncFullHistory: true,
-        shouldSyncHistoryMessage: () => true, markOnlineOnConnect: false, printQRInTerminal: false, getMessage: async () => undefined });
+        shouldSyncHistoryMessage: () => true, markOnlineOnConnect: false, printQRInTerminal: false, getMessage: async k => SENT.get(k?.id)?.message || undefined });
       sock.ev.on('creds.update', saveCreds); sock._B = B; sock._log = pino({ level: 'silent' });
     }
     const old = SOCK; realSend = sock.sendMessage.bind(sock); realPresence = sock.sendPresenceUpdate?.bind(sock) || null; realRead = sock.readMessages?.bind(sock) || null; SOCK = sock;
@@ -260,15 +275,16 @@ async function connect() {
       }
     });
     sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
-      chats?.forEach(chatPn);
+      chats?.forEach(chatPn); chats?.forEach(c => chanSeen(c.id, c.name));
       contacts?.forEach(addContact);
       chats?.forEach(c => { if (BAD_JID(c.id)) return; const x = chat(c.id); if (c.name) x.name = c.name; const t = tsMs(c.conversationTimestamp); if (t > (x.t || 0)) x.t = t; pinOf(x, c); x.hist = true });
       messages?.forEach(addMsg); tryLidRepo();
       state.syncing = true; state.lastSync = Date.now(); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 15e3); saveSoon();
     });
-    sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { const r = addMsg(m); if (r && type === 'notify') onIncoming(resolve(r.c), r.msg) } saveSoon() });
+    sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { chanSeen(m.key?.remoteJid); const r = addMsg(m); if (!m.key?.fromMe && type === 'notify') console.log(new Date().toISOString(), 'IN', `type=${type}`, `addr=${String(m.key?.remoteJid || '').split('@')[1] || '?'}`, r ? 'new' : 'dup/empty/filtered', `employee=${S().autoReply?.enabled ? 'on' : 'off'}`);
+      if (r && type === 'notify') { r.msg.at = Date.now(); if (!r.msg.fromMe) onIncoming(resolve(r.c), r.msg) } } saveSoon() });
     sock.ev.on('lid-mapping.update', x => { for (const m of [].concat(x || [])) learnLid(m.lid, m.pn) });
-    sock.ev.on('chats.upsert', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() });
+    sock.ev.on('chats.upsert', cs => { (cs || []).forEach(c => { chanSeen(c.id, c.name); chatPn(c); chatMeta(c) }); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() });
     sock.ev.on('contacts.upsert', cs => { cs.forEach(addContact); saveSoon() }); sock.ev.on('contacts.update', cs => { cs.forEach(addContact); saveSoon() });
   } catch (e) { console.log(new Date().toISOString(), 'WA start failed', e?.stack || e); state.status = 'reconnecting'; state.error = { code: null, text: diagnose(null, String(e?.message || e)), at: Date.now() }; scheduleReconnect(5000) }
   finally { connecting = false }
@@ -304,7 +320,8 @@ function lidStats() {
   const all = Object.values(store.chats).filter(c => !c.isGroup); const lids = all.filter(c => isLid(c.jid));
   return { chats: all.length, withPhone: all.length - lids.length, unresolved: lids.length, known: Object.keys(store.lidMap).length };
 }
-function lidLog(why) { const x = lidStats(); console.log(new Date().toISOString(), 'LID', why, `resolved=${x.withPhone} unresolved=${x.unresolved} map=${x.known}`) }
+let lidLast = '', lidLastT = 0;
+function lidLog(why) { const x = lidStats(), k = `${x.withPhone}/${x.unresolved}/${x.known}`; if (why === 'repo' && k === lidLast && Date.now() - lidLastT < 600e3) return; lidLast = k; lidLastT = Date.now(); console.log(new Date().toISOString(), 'LID', why, `resolved=${x.withPhone} unresolved=${x.unresolved} map=${x.known}`) }
 setInterval(() => { if (SOCK && state.status === 'connected' && lidStats().unresolved) tryLidRepo().then(saveSoon) }, 60e3).unref?.();
 // ---------------- data views ----------------
 
@@ -365,7 +382,7 @@ function allOrders() {
 const app = express(); app.disable('x-powered-by');
 app.use((q, s, n) => { s.set({ 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Opener-Policy': 'same-origin',
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" }); n() });
-const r = express.Router(); r.use(express.json({ limit: '400kb' }));
+const r = express.Router(); const jsonS = express.json({ limit: '400kb' }), jsonL = express.json({ limit: '90mb' }); r.use((q, s, n) => (q.path === '/api/channels/publish' ? jsonL : jsonS)(q, s, n));
 const hash = (pw, salt) => crypto.scryptSync(pw, salt, 64).toString('hex');
 const sessions = new Map(); let fails = { n: 0, t: Date.now() };
 const cookie = q => Object.fromEntries((q.headers.cookie || '').split(';').map(x => x.trim().split('=')).filter(x => x[0]));
@@ -500,6 +517,23 @@ r.post('/api/settings', (q, s) => {
     if (was !== ar.enabled) { audit(ar.enabled ? 'auto_reply_enabled' : 'auto_reply_disabled', { preview: { always: 'يرد دايم', offhours: 'يرد خارج الدوام', custom: `يرد من ${ar.from} إلى ${ar.to}` }[ar.schedule] }); if (!ar.enabled) { for (const t of pending.values()) clearTimeout(t); pending.clear() } }
   }
   saveSoon(); if (!b.tourDone && !b.hintsOff) audit('settings_changed', {}); s.json(cur);
+});
+r.get('/api/employee/check', async (q, s) => {   // «فحص الموظف»: every gate, in plain Saudi Arabic, plus the last decisions
+  const ar = { ...AUTO_DEFAULTS, ...S().autoReply }, now = Date.now(), lim = limits(ar, store.wa.linkedAt), auto = store.sends.filter(x => x.auto);
+  const h = auto.filter(x => now - x.t < 36e5).length, dd = auto.filter(x => now - x.t < 864e5).length;
+  const lastIn = Object.values(store.chats).flatMap(c => c.messages.filter(m => !m.fromMe && m.at)).sort((a, b) => b.at - a.at)[0];
+  const skew = lastIn ? Math.round((lastIn.at - lastIn.ts) / 60e3) : null; const b0 = BRAIN_URL ? await brain('/think', { text: 'السلام عليكم' }, { ai: false }) : null;
+  const checks = [
+    ['on', ar.enabled, ar.enabled ? 'الموظف شغّال' : 'الموظف مطفي — شغّله من فوق'],
+    ['wa', state.status === 'connected' && !!realSend, state.status === 'connected' ? 'الواتساب متصل' : 'الواتساب مو متصل'],
+    ['time', scheduleOpen(ar, S(), now), scheduleOpen(ar, S(), now) ? 'الحين داخل وقت عمل الموظف' : `الحين خارج وقت عمل الموظف (${ar.schedule === 'offhours' ? 'يرد بس برا ساعات الدوام' : ar.from + '–' + ar.to}). خله «دايم» إذا تبيه يرد كل الوقت`],
+    ['brain', !!b0, b0 ? 'الردود الذكية جاهزة' : 'الردود الذكية مو جاهزة، بيرد بالرسالة الثابتة'],
+    ['hour', h < lim.perHour, `ردود هالساعة ${h} من ${lim.perHour}`],
+    ['day', dd < lim.perDay, `ردود اليوم ${dd} من ${lim.perDay}${lim.warm ? ' (رقم جديد، الحد يزيد مع الأيام)' : ''}`],
+    ['clock', skew == null || Math.abs(skew) < 5, skew == null ? 'ما وصلت رسالة من عميل من فتحت البرنامج' : Math.abs(skew) < 5 ? 'ساعة الجهاز مضبوطة' : `ساعة الجهاز مختلفة ${Math.abs(skew)} دقيقة عن واتساب — الموظف يتحمّلها، بس اضبط الساعة`],
+  ];
+  const recent = store.audit.filter(a => /^auto_/.test(a.type)).slice(0, 12).map(a => ({ t: a.t, type: a.type, to: a.to, why: a.why || a.err || a.preview || '' }));
+  s.json({ ok: checks.slice(0, 4).every(c => c[1]), checks: checks.map(([id, ok, text]) => ({ id, ok, text })), pending: pending.size, recent });
 });
 r.post('/api/employee/test', async (q, s) => {   // dry run: what would the employee answer? (sends nothing)
   const text = String(q.body?.text || '').slice(0, 500); if (!text.trim()) return s.status(400).json({ error: 'اكتب رسالة' });
@@ -662,10 +696,99 @@ if (FAKE) {
   r.post('/api/sim/media', (q, s) => { const { jid, kind, body, name } = q.body || {}; if (!/^(image|video|audio|sticker|document)$/.test(kind || '')) return s.status(400).end(); s.json({ id: fake?.incomingMedia(jid, kind, body, name) }) });
   r.post('/api/sim/ev', (q, s) => { const { event, data } = q.body || {}; if (!/^(contacts|chats|lid-mapping)\./.test(event || '')) return s.status(400).end(); fake?.emit(event, data); s.json({ ok: true }) });
   r.post('/api/sim/lidrepo', async (q, s) => { const { lid, pn } = q.body || {}; fake?.signalRepository.lidMapping.set(lid, pn); await tryLidRepo(); s.json(lidStats()) });
+  r.post('/api/sim/channel', (q, s) => { fake?.addChannel(q.body || {}); if (q.body?.seen) chanSeen(q.body.id, q.body.name); s.json({ ok: true }) });
+  r.post('/api/sim/leak', (q, s) => { console.info('Closing session:', { _chains: {}, privKey: Buffer.from('AAAA'), rootKey: Buffer.from('BBBB') }); console.log({ indexInfo: { baseKey: Buffer.from('CC') } }); console.log('SAFE-MARKER'); s.json({ ok: true }) });
   r.get('/api/sim/outbox', (q, s) => s.json(fake?.outbox || []));
 }
 r.use(express.static(path.join(HERE, 'public'), { index: 'index.html' }));
 app.get('/', (q, s) => s.status(404).send('Not found'));
+
+// ---------------- WhatsApp Channel (القناة): the owner's own channels. Read info/posts; publish ONLY when he presses «انشر» and confirms. ----------------
+function chanSeen(j, name) { if (!CH.isChan(j)) return; const k = store.chan.known[j] ??= { jid: j, role: 'unknown', name: '' }; if (name && !k.name) k.name = name; saveSoon() }
+const chanSock = () => (state.status === 'connected' && SOCK && typeof SOCK.newsletterMetadata === 'function') ? SOCK : null;
+async function chanRefresh(j) {
+  const sk = chanSock(); if (!sk) return store.chan.known[j];
+  try { const m = CH.parseMeta(await sk.newsletterMetadata('jid', j)); if (m) { store.chan.known[j] = { ...store.chan.known[j], ...m }; saveSoon() } } catch (e) { store.chan.known[j] && (store.chan.known[j].err = String(e?.message || e).slice(0, 80)) }
+  return store.chan.known[j];
+}
+const chanList = () => Object.values(store.chan.known).sort((a, b) => (CH.canPost(b) - CH.canPost(a)) || (b.followers || 0) - (a.followers || 0));
+r.get('/api/channels', async (q, s) => {
+  if (q.query.refresh && chanSock()) await Promise.all(Object.keys(store.chan.known).slice(0, 30).map(chanRefresh));
+  s.json({ connected: !!chanSock(), channels: chanList(), drafts: store.chan.drafts, reminders: store.chan.reminders.filter(x => !x.done), ideas: await chanIdeas(), tips: CH.TIPS });
+});
+r.post('/api/channels/add', async (q, s) => {
+  const raw = String(q.body?.link || ''); const sk = chanSock(); if (!sk) return s.status(503).json({ error: 'اربط الواتساب أول' });
+  try { let m = null; const code = CH.inviteCode(raw);
+    if (CH.isChan(raw.trim())) m = CH.parseMeta(await sk.newsletterMetadata('jid', raw.trim())); else if (code) m = CH.parseMeta(await sk.newsletterMetadata('invite', code));
+    if (!m) return s.status(404).json({ error: 'ما لقينا القناة، تأكد من الرابط' });
+    store.chan.known[m.jid] = { ...store.chan.known[m.jid], ...m }; saveSoon(); s.json(store.chan.known[m.jid]) }
+  catch (e) { s.status(502).json({ error: 'ما قدرنا نفتح القناة الحين: ' + String(e?.message || e).slice(0, 60) }) }
+});
+r.get('/api/channels/posts', async (q, s) => {
+  const j = String(q.query.jid || ''); if (!store.chan.known[j]) return s.status(404).json({ error: 'قناة غير معروفة' });
+  const sk = chanSock(); let posts = store.chan.posts[j] || [], live = false;
+  if (sk && typeof sk.newsletterFetchMessages === 'function') try {
+    const dec = b => { const P = sk._B?.proto; return P ? P.Message.decode(Buffer.isBuffer(b) ? b : Buffer.from(b)) : (typeof b === 'object' && !Buffer.isBuffer(b) ? b : {}) };
+    const got = CH.parsePosts(await sk.newsletterFetchMessages(j, 20, 0, 0), dec); if (got.length) { posts = store.chan.posts[j] = got.slice(0, 30); live = true; saveSoon() } } catch (e) { }
+  s.json({ channel: await chanRefresh(j), posts, live });
+});
+r.get('/api/channels/pic', async (q, s) => {
+  const c = store.chan.known[String(q.query.jid || '')]; if (!c?.pic || !/^\/[\w\/.\-?=&%]+$/.test(c.pic)) return s.status(404).end();
+  const f = path.join(DIR, 'media', 'chan-' + c.jid.split('@')[0] + '.jpg');
+  try { if (!fs.existsSync(f) || q.query.fresh) { const rr = await fetch('https://mmg.whatsapp.net' + c.pic); if (!rr.ok) return s.status(404).end(); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, Buffer.from(await rr.arrayBuffer())) }
+    s.set('Cache-Control', 'private, max-age=86400'); s.type('jpg').sendFile(f) } catch { s.status(404).end() }
+});
+r.post('/api/channels/publish', async (q, s) => {
+  const b = q.body || {}, c = store.chan.known[b.jid];
+  if (b.confirm !== true) return s.status(400).json({ error: 'لازم تأكد النشر' });
+  if (!c) return s.status(404).json({ error: 'قناة غير معروفة' });
+  if (!CH.canPost(c)) return s.status(403).json({ error: 'تقدر تنشر في قنواتك بس (اللي أنت مالكها أو مشرف فيها)' });
+  if (!realSend || !chanSock()) return s.status(503).json({ error: 'الواتساب غير متصل' });
+  const kind = String(b.kind || 'text'), text = String(b.text || '').trim().slice(0, 4000);
+  let content;
+  if (kind === 'text') { if (!text) return s.status(400).json({ error: 'اكتب المنشور' }); content = { text } }
+  else if (kind === 'poll') { const opts = (Array.isArray(b.options) ? b.options : []).map(x => String(x).trim().slice(0, 100)).filter(Boolean).slice(0, 12);
+    if (!text || opts.length < 2) return s.status(400).json({ error: 'اكتب السؤال وخيارين على الأقل' }); content = { poll: { name: text.slice(0, 255), values: opts, selectableCount: 1 } } }
+  else if (kind === 'image' || kind === 'video') {
+    const mime = String(b.mime || ''); if (!CH.MIME_OK[kind].test(mime)) return s.status(400).json({ error: kind === 'image' ? 'الصورة لازم JPG أو PNG' : 'الفيديو لازم MP4' });
+    const buf = Buffer.from(String(b.data || ''), 'base64'); if (!buf.length || buf.length > CH.MAX_BYTES[kind]) return s.status(400).json({ error: 'الملف كبير أو فاضي' });
+    content = { [kind]: buf, mimetype: mime, ...(text ? { caption: text } : {}) } }
+  else return s.status(400).json({ error: 'نوع غير معروف' });
+  try { const m = await realSend(c.jid, content); const p = { id: m?.key?.id || '', t: Date.now(), kind, text: text.slice(0, 2000), reactions: [], views: null, mine: true };
+    (store.chan.posts[c.jid] ??= []).unshift(p); store.chan.posts[c.jid] = store.chan.posts[c.jid].slice(0, 30);
+    if (b.draftId) store.chan.drafts = store.chan.drafts.filter(d => d.id !== b.draftId);
+    audit('channel_post', { jid: c.jid, to: c.name, kind, preview: text.slice(0, 80) }); saveSoon(); s.json({ ok: true, post: p }) }
+  catch (e) { audit('channel_post_failed', { jid: c.jid, kind, err: String(e?.message || e).slice(0, 80) }); s.status(500).json({ error: 'ما انتشر: ' + String(e?.message || e).slice(0, 80) }) }
+});
+r.post('/api/channels/draft', async (q, s) => {   // save / delete a draft (nothing is sent)
+  const b = q.body || {}; if (b.delete) { store.chan.drafts = store.chan.drafts.filter(d => d.id !== b.delete); saveSoon(); return s.json({ drafts: store.chan.drafts }) }
+  const d = { id: String(b.id || crypto.randomBytes(5).toString('hex')).slice(0, 20), kind: /^(text|image|video|poll)$/.test(b.kind) ? b.kind : 'text', text: String(b.text || '').slice(0, 4000), options: (b.options || []).map(String).slice(0, 12), idea: String(b.idea || '').slice(0, 80), t: Date.now() };
+  store.chan.drafts = [d, ...store.chan.drafts.filter(x => x.id !== d.id)].slice(0, 40); saveSoon(); s.json({ drafts: store.chan.drafts, id: d.id });
+});
+r.get('/api/channels/qr', async (q, s) => { const c = store.chan.known[String(q.query.jid || '')]; if (!c?.invite) return s.status(404).json({ error: 'ما فيه رابط للقناة' });
+  const link = 'https://whatsapp.com/channel/' + c.invite; s.json({ link, qr: await QRCode.toDataURL(link, { width: 480, margin: 2 }) }) });
+r.post('/api/channels/remind', (q, s) => {    // a reminder for HIM to post (the app never posts by itself)
+  const b = q.body || {}; if (b.done) { const x = store.chan.reminders.find(r0 => r0.id === b.done); if (x) x.done = true; saveSoon(); return s.json({ ok: true }) }
+  const at = +b.at; if (!(at > Date.now() - 6e4)) return s.status(400).json({ error: 'اختر وقت جاي' });
+  const x = { id: crypto.randomBytes(5).toString('hex'), at, text: String(b.text || 'وقت منشور القناة').slice(0, 120), draftId: String(b.draftId || '').slice(0, 20) };
+  store.chan.reminders.push(x); store.chan.reminders = store.chan.reminders.filter(r0 => !r0.done).slice(-30); saveSoon(); s.json(x);
+});
+setInterval(() => { const now = Date.now(); for (const x of store.chan?.reminders || []) if (!x.done && !x.fired && x.at <= now) { x.fired = true; alert('channel', null, '⏰ ' + x.text); saveSoon() } }, 30e3).unref?.();
+r.post('/api/channels/write', async (q, s) => {   // «اكتب منشور»: local AI draft in Saudi dialect (or a ready template). Nothing is sent.
+  const b = q.body || {}; const j = await brain('/chan_draft', { idea: String(b.idea || '').slice(0, 300), kind: String(b.kind || 'text'), template: String(b.template || '').slice(0, 800) }, { ai: true, timeout: 60e3 });
+  s.json(j || { text: b.template || '', engine: 'rules' });
+});
+async function chanIdeas() {   // ranked ideas: nearest occasion first, then the weekly mix (value / product / poll / behind the scenes)
+  const now = new Date(), out = [], shop = S().shopName || 'محلنا';
+  const occ = ((await brain('/occasions', { days: 30 }))?.list || []);
+  for (const { occasion: on, days } of occ.slice(0, 2)) out.push({ id: 'occ-' + on, tag: days <= 0 ? 'اليوم' : `بعد ${days} يوم`, title: `${on}: افتح الطلبات بدري`, why: 'الناس تقرر هدايا المناسبات قبلها بأيام، المنشور المبكر يجيب طلبات أكثر.', kind: 'image',
+    template: `🌷 ${on} قرّب!\nجهزنا تنسيقات خاصة للمناسبة من ${shop}.\nاحجز بدري قبل الزحمة، رد علينا على الخاص ونرتب لك كل شي 💐` });
+  out.push({ id: 'new', tag: 'منتج', title: 'صوّر تنسيق اليوم', why: 'صورة حقيقية لتنسيق جديد هي أكثر منشور يجيب طلبات.', kind: 'image', template: `وصلنا اليوم ورد طازج 🌹\nتنسيق جديد من ${shop}، يناسب الهدايا والمناسبات.\nتبيه؟ راسلنا على الخاص وحنا نوصله لك 💐` });
+  out.push({ id: 'poll', tag: 'تصويت', title: 'اسأل متابعينك', why: 'التصويت أكثر شي يتفاعل معه المتابعين، ويعطيك وش يبون.', kind: 'poll', template: 'وش لونكم المفضل في البوكيه؟ 💐', options: ['أحمر', 'وردي', 'أبيض'] });
+  out.push({ id: 'tip', tag: 'نصيحة', title: 'نصيحة عناية بالورد', why: 'المنشورات المفيدة تخلي الناس يتابعون وما يكتمونك.', kind: 'text', template: 'نصيحة اليوم 🌿\nغيّر موية الورد كل يومين، وقص الساق بشكل مائل، ويعيش معك أسبوع زيادة.\nعندك سؤال؟ راسلنا 🌷' });
+  out.push({ id: 'bts', tag: 'من داخل المحل', title: 'ورّهم كيف تجهزون الطلب', why: 'لقطة من التجهيز تبني ثقة وتخلي المنشور ينتشر.', kind: 'video', template: `من داخل ${shop} 🎀\nكذا نجهز طلباتكم بحب.\nتبي واحد مثله؟ راسلنا على الخاص 💐` });
+  return out.slice(0, 5);
+}
 app.use('/' + TOKEN, r); app.use((q, s) => s.status(404).send('Not found'));
 const server = app.listen(PORT, HOST, () => console.log(`ENGINE READY http://${HOST}:${PORT}/<token>/`));
 const bye = () => { try { save() } catch { } process.exit(0) };
