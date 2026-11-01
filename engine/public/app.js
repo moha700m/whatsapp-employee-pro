@@ -101,7 +101,7 @@ async function start() {
   $$('[data-p]').forEach(b => b.onclick = () => go(b.dataset.p));
   $('#bell').onclick = toggleAlerts; $('#help').onclick = toggleHelp; $('#empPill').onclick = () => go('emp');
   await loadSettings(); await tick();
-  go(location.hash.slice(1) || 'home'); setInterval(tick, 2500);
+  go(location.hash.slice(1) || 'home'); setInterval(tick, 2500); live();
   if (!SET.tourDone) setTimeout(() => tour(0), 600);
 }
 // ---------- polling
@@ -406,6 +406,9 @@ async function renderSales() {
 // ---------- MARKETING
 // ---------- MARKETING (v2.3): a few ranked, ready actions. Every message is a draft the owner opens and sends himself.
 let MKT = null, MKTD = {};
+const MKT_ALTS = ['هلا {الاسم} 🌷 اشتقنا لك! وصلنا ورد جديد وطازج هالأسبوع، تبي أرسل لك صور التنسيقات؟',
+  'هلا {الاسم}، عساك بخير 🌸 إذا عندك مناسبة قريبة جهزنا لك تنسيقات حلوة، وش رأيك أوريك؟',
+  'هلا {الاسم} 🌹 حبينا نسلم عليك ونقولك إننا موجودين لأي هدية أو مناسبة، تبي نرتب لك شي؟'];
 async function renderMkt() {
   const el = $('#p-mkt');
   el.innerHTML = `<div class="page-h"><div><h1>التسويق</h1><p>أهم الخطوات اليوم، مرتبة من الأقوى. الرسالة جاهزة، وأنت تفتح المحادثة وترسل بنفسك.</p></div></div><div id="mk"><div class="skel" style="height:160px"></div><div class="skel" style="height:160px"></div></div>`;
@@ -420,7 +423,12 @@ async function renderMkt() {
   $$('[data-t]').forEach(t => t.oninput = () => MKTD[t.dataset.t] = t.value);
   $$('[data-cp]').forEach(b => b.onclick = () => navigator.clipboard.writeText(txt(b.dataset.cp).replace(/\{الاسم\}\s*/g, '')).then(() => toast('انسخت ✓'), () => toast('ما قدرنا ننسخ')));
   $$('[data-ai]').forEach(b => b.onclick = async () => { const a = MKT.actions.find(x => x.id === b.dataset.ai); b.disabled = true; const o = b.innerHTML; b.textContent = 'يكتب…';
-    try { const r = await api('api/mkt/draft', { goal: a.goal, template: txt(a.id) }); MKTD[a.id] = r.text; $(`[data-t="${a.id}"]`).value = r.text; toast(r.engine === 'ai' ? 'كتبها الذكاء المحلي — عدّلها براحتك' : 'الذكاء مو متاح الحين، خليناها مثل ما هي') } catch { toast('ما ضبط') } b.disabled = false; b.innerHTML = o });
+    try { const r = await api('api/mkt/draft', { goal: a.goal, template: txt(a.id) }); MKTD[a.id] = r.text; $(`[data-t="${a.id}"]`).value = r.text;
+      toast(r.engine === 'ai' ? 'كتبها الذكاء المحلي — عدّلها براحتك' : 'جهزنا لك رسالة — عدّلها براحتك');
+      if (r.engine === 'ai') { }
+      else { const box = b.closest('.mk-draft'); box.querySelector('.mk-alts')?.remove(); const alts = [...(r.alts || []), a.template, ...MKT_ALTS].filter((x, i, A) => x && A.indexOf(x) === i).slice(0, 4);
+        box.insertAdjacentHTML('beforeend', `<div class="mk-alts"><small class="muted">${r.engine === 'library' ? 'جهزنا لك رسالة. تبي غيرها؟ اختر:' : esc(r.reason || 'الذكاء مو متاح الحين') + ' — اختر رسالة جاهزة:'}</small>${alts.map((x, i) => `<button class="chip" data-alt="${i}">${esc(x.replace(/\{الاسم\}/g, 'فلان').slice(0, 60))}…</button>`).join('')}</div>`);
+        box.querySelectorAll('[data-alt]').forEach(c => c.onclick = () => { MKTD[a.id] = alts[c.dataset.alt]; $(`[data-t="${a.id}"]`).value = alts[c.dataset.alt]; toast('اخترناها ✓') }) } } catch { toast('ما ضبط') } b.disabled = false; b.innerHTML = o });
   $$('[data-more]').forEach(b => b.onclick = () => { const a = MKT.actions.find(x => x.id === b.dataset.more); const box = b.parentElement; b.remove();
     box.insertAdjacentHTML('beforeend', a.people.slice(box.querySelectorAll('.mk-p').length).map(p => `<button class="mk-p" data-open="${esc(p.jid)}" data-a="${a.id}"><span class="av" style="--h:${hue(p.jid)}">${ini(p.label)}</span><span class="grow ell">${esc(p.label)}</span><span class="go">افتح وأرسل</span></button>`).join('')); bindOpen() });
   const bindOpen = () => $$('.mk-p').forEach(b => b.onclick = async () => { if (MKT.opened >= MKT.cap) return toast('وصلت حد اليوم — كمل بكرة عشان رقمك يبقى بأمان');
@@ -482,12 +490,22 @@ async function renderEmp() {
 }
 // ---------- SETTINGS
 let SETTAB = 'shop';
-const SETTABS = [['teach', 'تعليم الموظف'], ['shop', 'المحل'], ['prices', 'الأسعار والمنتجات'], ['tpl', 'الردود الجاهزة'], ['brain', 'المساعد'], ['rules', 'المتابعة والتنبيهات'], ['brand', 'الشكل والهوية'], ['sec', 'القفل والأمان'], ['log', 'السجل'], ['wa', 'الواتساب'], ['about', 'عن البرنامج']];
+const SETTABS = [['teach', 'تعليم الموظف'], ['ntf', 'الإشعارات'], ['shop', 'المحل'], ['prices', 'الأسعار والمنتجات'], ['tpl', 'الردود الجاهزة'], ['brain', 'المساعد'], ['rules', 'المتابعة والتنبيهات'], ['brand', 'الشكل والهوية'], ['sec', 'القفل والأمان'], ['log', 'السجل'], ['wa', 'الواتساب'], ['about', 'عن البرنامج']];
 async function renderSet() {
   const el = $('#p-set'), s = SET; let logo = s.logo, brandC = s.brand, T = (s.templates || []).map(x => ({ ...x })), P = (s.products || []).map(x => ({ ...x }));
   const sw = (id, v, l, h) => `<div class="setrow"><div class="grow"><b>${l}</b>${h ? `<div class="help-t">${h}</div>` : ''}</div><label class="switch"><input type="checkbox" id="${id}" ${v ? 'checked' : ''} aria-label="${esc(l)}"><span></span></label></div>`;
   const body = {
     teach: '<div id="teachbox"></div>',
+    ntf: (() => { const n = { on: true, msg: true, order: true, alert: true, sound: true, volume: 70, quiet: false, quietFrom: '23:00', quietTo: '08:00', ...(s.notify || {}) };
+      return `<h3>الإشعارات</h3><p class="muted" style="margin-top:-6px">تنبيه ويندوز مع نغمة ناعمة، حتى لو البرنامج مصغّر. اضغط التنبيه ويفتح لك المحادثة.</p>
+      ${sw('n0', n.on, 'إشعارات ويندوز', 'تشغيل أو إيقاف كل الإشعارات')}
+      <div class="ntf-types">${[['msg', 'رسالة جديدة من عميل', 'نغمة خفيفة قصيرة'], ['order', 'طلب جديد', 'نغمة أوضح بنبرتين'], ['alert', 'الموظف يحتاجك', 'لما يحوّل لك عميل أو ما يقدر يرد']].map(([k, l, h]) =>
+        `<div class="setrow"><div class="grow"><b>${l}</b><div class="help-t">${h}</div></div><button class="btn sm ghost" data-play="${k}" aria-label="اسمع نغمة ${l}">▶ اسمع</button><label class="switch"><input type="checkbox" data-nk="${k}" ${n[k] ? 'checked' : ''} aria-label="${l}"><span></span></label></div>`).join('')}</div>
+      ${sw('n1', n.sound, 'الصوت', 'نغمة مع كل إشعار')}
+      <label class="lbl" for="n2">مستوى الصوت <span id="n2v">${num(n.volume)}٪</span></label><input type="range" id="n2" min="0" max="100" step="5" value="${n.volume}" style="width:100%">
+      ${sw('n3', n.quiet, 'وقت الهدوء', 'الإشعار يوصل بدون صوت في هالوقت')}
+      <div class="grid g2" style="gap:12px"><div><label class="lbl" for="n4">من</label><input type="time" id="n4" value="${n.quietFrom}"></div><div><label class="lbl" for="n5">إلى</label><input type="time" id="n5" value="${n.quietTo}"></div></div>
+      <button class="btn" id="n6" style="margin-top:14px">جرّب إشعار</button> <span id="nsv" class="muted"></span>` })(),
     shop: `<h3>بيانات المحل</h3><label class="lbl" for="s1">اسم المحل</label><input id="s1" value="${esc(s.shopName)}"><div class="grid g2" style="gap:12px"><div><label class="lbl" for="s2">النشاط</label><input id="s2" value="${esc(s.shopType)}"></div><div><label class="lbl" for="s3">المدينة</label><input id="s3" value="${esc(s.city)}"></div></div>
      <div class="grid g2" style="gap:12px"><div><label class="lbl" for="s6">يفتح الساعة</label><input type="time" id="s6" value="${esc(s.hoursFrom)}"></div><div><label class="lbl" for="s7">يقفل الساعة</label><input type="time" id="s7" value="${esc(s.hoursTo)}"></div></div>
      <label class="lbl" for="s4">نبذة عن المحل</label><textarea id="s4" placeholder="وش تبيعون، وش يميزكم…">${esc(s.about)}</textarea><label class="lbl" for="s5">التوصيل والدفع</label><textarea id="s5" style="min-height:72px" placeholder="مثلاً: نوصل داخل المدينة بـ ٣٠ ريال، والدفع تحويل أو مدى">${esc(s.delivery)}</textarea>`,
@@ -522,10 +540,15 @@ async function renderSet() {
      <div class="notice b" style="margin-top:12px">واتساب ما يسمح رسمياً بالبرامج غير الرسمية. البرنامج يقلل الخطر (ما يرسل إلا بموافقتك أو للي كتب لك، وبوقت طبيعي)، لكن الخطر ما يصير صفر.</div></div>`,
   }[SETTAB];
   el.innerHTML = `<div class="page-h"><div><h1>الإعدادات</h1></div></div><div class="setwrap"><nav class="setnav" aria-label="أقسام الإعدادات">${SETTABS.map(([k, l]) => `<button data-t="${k}" class="${SETTAB === k ? 'on' : ''}" aria-current="${SETTAB === k}">${l}</button>`).join('')}</nav>
-   <div class="card setcard ${SETTAB === 'teach' ? 'wide' : ''}">${body}${['log', 'wa', 'sec', 'about', 'teach'].includes(SETTAB) ? '' : '<button class="btn primary" id="sv" style="margin-top:20px">حفظ</button>'}</div></div>`;
+   <div class="card setcard ${SETTAB === 'teach' ? 'wide' : ''}">${body}${['log', 'wa', 'sec', 'about', 'teach', 'ntf'].includes(SETTAB) ? '' : '<button class="btn primary" id="sv" style="margin-top:20px">حفظ</button>'}</div></div>`;
   el.querySelectorAll('.setnav [data-t]').forEach(b => b.onclick = () => { SETTAB = b.dataset.t; renderSet() });
   const v = id => $('#' + id)?.value, c = id => $('#' + id)?.checked;
   if (SETTAB === 'teach') renderTeach($('#teachbox'));
+  if (SETTAB === 'ntf') { const save = async () => { const notify = { on: c('n0'), sound: c('n1'), volume: +v('n2'), quiet: c('n3'), quietFrom: v('n4'), quietTo: v('n5') }; $$('[data-nk]').forEach(i => notify[i.dataset.nk] = i.checked);
+      SET = await api('api/settings', { notify }); $('#nsv').textContent = 'محفوظ ✓' };
+    $$('#p-set input').forEach(i => i.onchange = save); $('#n2').oninput = e => { $('#n2v').textContent = num(e.target.value) + '٪' };
+    $$('[data-play]').forEach(b => b.onclick = () => chime(b.dataset.play, +v('n2')));
+    $('#n6').onclick = async () => { await api('api/notify/test', {}); toast('أرسلنا إشعار تجربة') } }
   if (SETTAB === 'brand') { $('#lf').onchange = e => { const f = e.target.files[0]; if (!f) return; if (f.size > 200000) return toast('الصورة كبيرة (الحد ٢٠٠ كيلوبايت)'); const r = new FileReader(); r.onload = () => { logo = r.result; $('#lp').innerHTML = `<img src="${esc(logo)}" alt="">` }; r.readAsDataURL(f) };
     $$('input[name=thm]').forEach(r => r.onchange = () => applyTheme(r.value));
     $('#lr').onclick = () => { logo = ''; $('#lp').textContent = ini(s.shopName) }; $('#bc').oninput = e => { brandC = e.target.value; document.documentElement.style.setProperty('--brand', brandC); brandText() };
@@ -561,3 +584,16 @@ async function disconnectWA() {
 }
 let LOCKED = null; const store_locked = () => LOCKED;
 boot();
+
+// ---------- live updates (Server-Sent Events): new messages show instantly in the list, the badge and the open chat; reconnects by itself
+function live() {
+  let t = null, n = 0; const es = new EventSource('api/events');
+  let sugFor = null;
+  const refresh = jid => { clearTimeout(t); t = setTimeout(async () => { await loadChats(); if (PAGE === 'chats' && CH && (!jid || CH === jid)) { await drawThread(); if (sugFor === CH) { sugFor = null; suggest() } } }, 120) };
+  es.addEventListener('msg', e => { try { const d = JSON.parse(e.data); if (!d.fromMe && d.jid === CH) sugFor = CH; refresh(d.jid) } catch { refresh() } });
+  es.addEventListener('alert', () => tick());
+  es.addEventListener('hello', () => { if (n++) { refresh(); tick() } });   // reconnected after an engine restart → resync everything
+  live.es = es;
+}
+// soft chimes (also played by Windows with the toast); here only for «اسمع» in settings
+function chime(kind, vol = 70) { try { const a = new Audio('sounds/' + ({ msg: 'msg', order: 'order', alert: 'alert' }[kind] || 'msg') + '.wav'); a.volume = Math.max(0, Math.min(1, vol / 100)); a.play().catch(() => {}) } catch { } }

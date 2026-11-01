@@ -1,7 +1,7 @@
 ; «موظف واتساب» — Inno Setup 6 script (Arabic-first, per-user, no admin).
 ; Build: ISCC packaging\installer.iss   (after PyInstaller → dist\WhatsAppEmployee)
 #define AppName "موظف واتساب"
-#define AppVer "2.4.0"
+#define AppVer "2.4.1"
 #define AppExe "WhatsAppEmployee.exe"
 #define Publisher "Mohammed alzhrani"
 #define AppUrl "https://github.com/moha700m/whatsapp-employee-pro"
@@ -91,8 +91,15 @@ Name: "{app}\data"; Flags: uninsneveruninstall
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\_internal"
 
+[Registry]
+; click on a Windows notification → wae://chat/<id> opens that chat in the running app
+Root: HKCU; Subkey: "Software\Classes\wae"; ValueType: string; ValueName: ""; ValueData: "URL:WhatsApp Employee"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\wae"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\wae\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"
+Root: HKCU; Subkey: "Software\Classes\wae\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""
+
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Comment: "{#AppName}"
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Comment: "{#AppName}"; AppUserModelID: "MohammedAlzhrani.WhatsAppEmployee"
 Name: "{autoprograms}\{cm:Uninstall}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: desktopicon
 

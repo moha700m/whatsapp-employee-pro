@@ -84,6 +84,34 @@ def single_instance(data_dir):
     except Exception: pass
     return None, lock
 
+def open_request(link):
+    """A click on a Windows notification (wae://chat/<id>): ask the running window to open that chat; exit if it is running."""
+    import json, time
+    from app.launcher import user_data_dir
+    d = user_data_dir(); d.mkdir(parents=True, exist_ok=True)
+    jid = link.split("wae://chat/", 1)[1].strip("/") if "wae://chat/" in link else ""
+    (d / "open-request.json").write_text(json.dumps({"jid": jid[:120], "t": time.time()}), encoding="utf-8")
+    url, _ = single_instance(d)
+    if url: sys.exit(0)
+
+def watch_open_requests(win, data_dir):
+    import json, threading, time
+    f = data_dir / "open-request.json"
+    def loop():
+        while True:
+            time.sleep(0.5)
+            try:
+                if not f.exists(): continue
+                req = json.loads(f.read_text(encoding="utf-8")); f.unlink()
+                if time.time() - req.get("t", 0) > 120: continue
+                try: win.restore()
+                except Exception: pass
+                try: win.show()
+                except Exception: pass
+                if req.get("jid"): win.evaluate_js(f"openChat({json.dumps(req['jid'])})")
+            except Exception: pass
+    threading.Thread(target=loop, daemon=True).start()
+
 def run_app(force_browser=False):
     import json
     from app.launcher import Engine, user_data_dir
@@ -105,7 +133,7 @@ def run_app(force_browser=False):
         import webview  # pywebview -> Edge WebView2 on Windows 10/11
         win = webview.create_window(f"{config.APP_NAME} {config.APP_VERSION}", url, width=1440, height=900, min_size=(1100, 680),
                                     background_color="#FFFFFF", text_select=True)
-        start_tray(win, shutdown)
+        start_tray(win, shutdown); watch_open_requests(win, data_dir)
         webview.start(private_mode=False, storage_path=str(data_dir / "webview"))
         startup_log("window closed")
     except Exception as e:
@@ -211,6 +239,8 @@ def main():
             return smoke()
         except Exception:
             startup_log("SMOKE FAILED:\n" + traceback.format_exc()); traceback.print_exc(); return 1
+    link = next((a for a in sys.argv[1:] if a.lower().startswith("wae://")), None)
+    if link: open_request(link)
     ensure_venv()
     config.secure_data_dir()
     try:

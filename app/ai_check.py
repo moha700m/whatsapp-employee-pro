@@ -24,6 +24,11 @@ def run(max_ms=30000, need_ai=2):
         if issues: out["problems"].append(f"bad reply for {t}: {issues}")
         if ms > max_ms: out["problems"].append(f"slow {ms} ms: {t}")
     if ai_n < need_ai: out["problems"].append(f"only {ai_n}/5 replies came from the model")
+    # «اكتب بالذكاء» in Marketing must return model text on the installed build
+    m = BS.do_mkt_draft({"ai": True, "goal": "متابعة عميل ما رد", "template": "هلا {الاسم} 🌷 حبينا نطمن عليك", "shop": SHOP})
+    out["mkt"] = m
+    if not m["text"] or m["text"] == "هلا {الاسم} 🌷 حبينا نطمن عليك" or m["engine"] not in ("ai", "library") or "model" in str(m.get("reason", "")): out["problems"].append(f"marketing draft returned nothing: {m.get('reason')}")
+    if m["engine"] == "library" and "مطفي" in str(m.get("reason", "")): out["problems"].append("marketing draft did not reach the model: " + str(m.get("reason")))
     st = llm.status(); out["rss_mb"] = st["rss_mb"]; out["avg_ms"] = st["avg_ms"]
     # fallback: a small PC (4 GB) must never try the model and still answer with the rule brain
     os.environ["WAE_FAKE_RAM_GB"] = "4"
@@ -42,6 +47,7 @@ def report(o):
     L = [f"AI TEST {'OK' if o['ok'] else 'FAILED'} load={o.get('load_s')}s avg={o.get('avg_ms')}ms rss={o.get('rss_mb')}MB ram={o['status0'].get('ram_gb')}GB threads={o['status0'].get('threads')}"]
     for s in o["samples"]: L.append(f"  [{s['engine']} {s['ms']}ms] {s['q']} => {s['a']}" + (f"  (rejected: {s['rejected']})" if s.get("rejected") else ""))
     if "fallback" in o: L.append(f"  fallback(4GB): available={o['fallback']['available']} engine={o['fallback']['engine']} => {o['fallback']['reply']}")
+    if "mkt" in o: L.append(f"  marketing draft [{o['mkt']['engine']}] {o['mkt']['text']}")
     L.append(f"  missing files → {o.get('missing_files_engine')}")
     L += ["  PROBLEM: " + p for p in o["problems"]]
     return "\n".join(L)

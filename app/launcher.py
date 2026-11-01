@@ -51,14 +51,16 @@ class Engine:
     def __init__(self, data_dir=None, fake=False, port=None, extra_env=None, log_path=None):
         self.data = Path(data_dir or user_data_dir()) / "wa"; self.data.mkdir(parents=True, exist_ok=True)
         self.fake, self.port, self.extra = fake, port, extra_env or {}
-        self.token = secrets.token_urlsafe(16); self.brain = BrainServer(secrets.token_hex(16)); self.proc = None
+        self.token = secrets.token_urlsafe(16); self.notify_key = secrets.token_hex(16); self.notifier = None; self.proc = None
         self.log_path = Path(log_path) if log_path else (Path(data_dir or user_data_dir()) / "logs" / "engine.log")
+        os.environ["WAE_LOG_FILE"] = str(self.log_path); self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.brain = BrainServer(secrets.token_hex(16))
         self.url = None
 
     def start(self, timeout=40):
         self.brain.start(); port = self.port or free_port()
         env = dict(os.environ, DATA_DIR=str(self.data), PORT=str(port), TOKEN=self.token, BRAIN_URL=self.brain.url, BRAIN_KEY=self.brain.key,
-                   APP_VERSION=config.APP_VERSION, EXIT_WITH_STDIN="1", **({"FAKE_WA": "1"} if self.fake else {}), **self.extra)
+                   APP_VERSION=config.APP_VERSION, NOTIFY_KEY=self.notify_key, EXIT_WITH_STDIN="1", **({"FAKE_WA": "1"} if self.fake else {}), **self.extra)
         self.log_path.parent.mkdir(parents=True, exist_ok=True); scrub_log(self.log_path); self._log = open(self.log_path, "a", encoding="utf-8")
         flags = 0x08000000 if os.name == "nt" else 0       # CREATE_NO_WINDOW
         self.proc = subprocess.Popen([find_node(), str(engine_dir() / "server.js")], cwd=str(engine_dir()), env=env, stdin=subprocess.PIPE,
@@ -68,11 +70,23 @@ class Engine:
         while time.time() < end:
             if self.proc.poll() is not None: raise RuntimeError(f"engine exited with code {self.proc.returncode} (see {self.log_path})")
             try:
-                if http_json(self.url + "healthz", timeout=2).get("ok"): return self.url
+                if http_json(self.url + "healthz", timeout=2).get("ok"): self._notify_start(); return self.url
             except Exception: time.sleep(0.3)
         raise RuntimeError("engine did not start in time")
 
+    def _notify_start(self):
+        try:
+            from app.notifier import Notifier
+            lf = self.log_path
+            def log(m):
+                try:
+                    with open(lf, "a", encoding="utf-8") as f: f.write(m + "\n")
+                except Exception: pass
+            self.notifier = Notifier(self.url, self.notify_key, log=log).start()
+        except Exception: pass
+
     def stop(self):
+        if getattr(self, "notifier", None): self.notifier.stop()
         if self.proc and self.proc.poll() is None:
             try: self.proc.stdin.close()                    # engine saves and exits when stdin closes
             except Exception: pass

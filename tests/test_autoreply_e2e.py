@@ -55,3 +55,26 @@ def test_skip_has_visible_reason_and_check_button(eng):
     k = cl.req("api/employee/check"); assert k["ok"] and {c["id"] for c in k["checks"]} >= {"on", "wa", "time", "day"} and k["recent"]
     cl.req("api/settings", {"autoReply": {"enabled": True, "schedule": "custom", "from": "03:00", "to": "03:01"}})
     k = cl.req("api/employee/check"); assert not k["ok"] and not next(c for c in k["checks"] if c["id"] == "time")["ok"]
+
+def _sends(cl, j): return [o for o in cl.req("api/sim/outbox") if o["jid"] == j]
+
+def test_burst_of_three_gets_one_reply(eng):
+    cl, e = eng; j = "966500000601@s.whatsapp.net"
+    for t in ("السلام عليكم", "عندكم ورد جوري؟", "كم سعر البوكيه؟"): cl.req("api/sim/incoming", {"jid": j, "text": t, "name": "عميل"}); time.sleep(0.1)
+    assert e2e.wait(lambda: _sends(cl, j), timeout=20); time.sleep(2.5)
+    out = _sends(cl, j); assert len(out) == 1, out                          # ONE reply for the burst
+    assert "المسؤول" in out[0]["text"] or "دقايق" in out[0]["text"]          # price/order beats greeting
+
+def test_message_during_cooldown_is_answered_later(eng):
+    cl, e = eng; j = "966500000602@s.whatsapp.net"
+    cl.req("api/settings", {"autoReply": {"enabled": True, "schedule": "always", "delaySec": 0, "humanTyping": False, "cooldownMin": 0.05}})
+    cl.req("api/sim/incoming", {"jid": j, "text": "هلا", "name": "عميل"}); assert e2e.wait(lambda: len(_sends(cl, j)) == 1, timeout=20)
+    cl.req("api/sim/incoming", {"jid": j, "text": "متى تفتحون؟", "name": "عميل"})        # inside the cooldown
+    assert e2e.wait(lambda: len(_sends(cl, j)) == 2, timeout=30)
+    o = _sends(cl, j); assert o[0]["text"] != o[1]["text"]                                 # never the same text twice in a row
+
+def test_sticker_or_voice_gets_ack_and_alert(eng):
+    cl, e = eng; j = "966500000603@s.whatsapp.net"
+    cl.req("api/sim/media", {"jid": j, "kind": "sticker", "body": {"mimetype": "image/webp"}, "name": "عميل"})
+    assert e2e.wait(lambda: _sends(cl, j), timeout=20) and "وصلت" in _sends(cl, j)[0]["text"]
+    assert any(a["kind"] == "human" and a.get("jid") == j for a in cl.req("api/alerts"))

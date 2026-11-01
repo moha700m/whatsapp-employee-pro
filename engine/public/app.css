@@ -314,3 +314,5 @@ html[dir=rtl] .chatwrap .side-panel{transform:translateX(-105%)}
 .autowhy{margin:6px 12px 0;padding:8px 12px;border-radius:10px;font-size:14px}.autowhy.no{background:var(--warn-bg);color:var(--notice-ink)}.autowhy.ok{background:var(--brand-soft);color:var(--notice-g-ink)}
 .chk{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}.chk li{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;background:var(--surface);font-size:15px}
 .chk li span{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-weight:800;flex:none}.chk li.ok span{background:var(--brand-soft);color:var(--brand-t)}.chk li.no{background:var(--bad-bg);color:var(--bad)}.chk li.no span{background:var(--bad);color:#fff}
+
+.mk-alts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center}.mk-alts small{width:100%}.mk-alts .chip{cursor:pointer;border:1px solid var(--line);min-height:36px}

@@ -4,7 +4,15 @@ Never downloads anything. If RAM < 6 GB, files are missing, or anything fails, c
 import json, os, socket, subprocess, sys, threading, time, urllib.request
 from pathlib import Path
 
-MIN_RAM_GB = 6.0
+MIN_RAM_GB = 5.5   # a «6 GB» PC reports ~5.8
+
+def log(msg):
+    """One line in engine.log (path set by the launcher); never prompts or customer text."""
+    f = os.environ.get("WAE_LOG_FILE")
+    if not f: return
+    try:
+        with open(f, "a", encoding="utf-8") as h: h.write(time.strftime("%Y-%m-%dT%H:%M:%S") + " LLM " + msg + "\n")
+    except Exception: pass
 IDLE_UNLOAD_SEC = 10 * 60
 
 def ram_gb():
@@ -62,6 +70,8 @@ class LocalLLM:
         self.proc = None; self.port = None; self.state = "idle"; self.error = ""; self.last = 0.0; self.lock = threading.Lock(); self.slot = threading.Semaphore(1)
         self.stats = {"calls": 0, "fails": 0, "avg_ms": 0, "last_ms": 0, "load_ms": 0}
         threading.Thread(target=self._reaper, daemon=True).start()
+        ok, why = self.available()
+        log(f"init exe={'found' if self.exe else 'MISSING'} model={self.model.name if self.model else 'MISSING'} dirs={[str(d) for d in _dirs()]} ram={self.ram}GB threads={self.threads} available={ok} {why}")
 
     def available(self):
         if not self.exe or not self.model: return False, "ملفات الذكاء غير موجودة في هذا الإصدار"
@@ -86,19 +96,20 @@ class LocalLLM:
             args = [str(self.exe), "-m", str(self.model), "--host", "127.0.0.1", "--port", str(self.port), "-c", str(self.ctx), "-t", str(self.threads),
                     "-np", "1", "-ngl", "0", "--no-webui", "--log-disable"]
             flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
+            log(f"start port={self.port} exe={self.exe}")
             self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, creationflags=flags)
             while time.time() - t0 < wait:
-                if self.proc.poll() is not None: self.state = "error"; self.error = f"exit {self.proc.returncode}"; self.stats["fails"] += 1; raise RuntimeError("الذكاء ما اشتغل")
+                if self.proc.poll() is not None: self.state = "error"; self.error = f"exit {self.proc.returncode}"; self.stats["fails"] += 1; log(f"FAILED exit={self.proc.returncode}"); raise RuntimeError("الذكاء ما اشتغل")
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=2) as r:
-                        if r.status == 200: self.state = "ready"; self.stats["load_ms"] = int((time.time() - t0) * 1000); self.last = time.time(); return
+                        if r.status == 200: self.state = "ready"; self.stats["load_ms"] = int((time.time() - t0) * 1000); self.last = time.time(); log(f"ready in {self.stats['load_ms']}ms"); return
                 except Exception: pass
                 time.sleep(0.4)
-            self.stop(); self.state = "error"; self.stats["fails"] += 1; raise RuntimeError("الذكاء تأخر في التشغيل")
+            self.stop(); self.state = "error"; self.stats["fails"] += 1; log(f"FAILED start timeout {wait}s"); raise RuntimeError("الذكاء تأخر في التشغيل")
 
-    def chat(self, messages, max_tokens=160, temperature=0.5, timeout=60, json_mode=False, wait=12):
+    def chat(self, messages, max_tokens=160, temperature=0.5, timeout=60, json_mode=False, wait=30):
         """One request at a time (CPU). If the model is busy longer than `wait` seconds we give up → caller uses the rule brain (UI never hangs)."""
-        if not self.slot.acquire(timeout=wait): raise RuntimeError("busy")
+        if not self.slot.acquire(timeout=wait): log(f"busy (waited {wait}s)"); raise RuntimeError("busy")
         try: return self._chat(messages, max_tokens, temperature, timeout, json_mode)
         finally: self.slot.release()
 
@@ -109,8 +120,8 @@ class LocalLLM:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=json.dumps(body).encode(), headers={"content-type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r: out = json.loads(r.read().decode("utf-8"))
-        except Exception:
-            self.stats["fails"] += 1; raise
+        except Exception as e:
+            self.stats["fails"] += 1; log(f"request failed: {type(e).__name__}"); raise
         self.last = time.time(); ms = int((self.last - t0) * 1000); n = self.stats["calls"] = self.stats["calls"] + 1
         self.stats["last_ms"] = ms; self.stats["avg_ms"] = int((self.stats["avg_ms"] * (n - 1) + ms) / n); self.stats["fails"] = 0
         return out["choices"][0]["message"]["content"].strip()

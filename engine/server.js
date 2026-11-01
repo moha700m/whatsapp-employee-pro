@@ -20,7 +20,7 @@ const PORT = +process.env.PORT || 8796, HOST = '127.0.0.1';
 const TOKEN = (process.env.TOKEN || crypto.randomBytes(12).toString('hex')).trim();
 const BRAIN_URL = process.env.BRAIN_URL || '', BRAIN_KEY = process.env.BRAIN_KEY || '';
 const FAKE = process.env.FAKE_WA === '1', FAKE_FAST = FAKE && process.env.HUMAN_TYPING !== '1';
-const VERSION = process.env.APP_VERSION || '2.4.0';
+const VERSION = process.env.APP_VERSION || '2.4.1';
 const DATA = path.join(DIR, 'store.json');
 
 // ---------------- store ----------------
@@ -49,7 +49,7 @@ const DEF = {
     { k: 'تأكيد', t: 'تم تأكيد طلبك ✅ وموعد التوصيل …' }, { k: 'شكر', t: 'شكراً لثقتك فينا، نتشرف بخدمتك دايم 🌹' }],
   tags: ['جديد', 'مهتم', 'طلب', 'تم التوصيل', 'مميز'], followUpDays: 1, dormantDays: 30, hotScore: 60, notifyHot: true, notifyNew: true,
   aiEnabled: true, aiModel: 'auto', teach: null, aiTone: 'ودودة ومحترفة', sessionMinutes: 120, tourDone: false, hintsOff: [], theme: 'auto',
-  autoReply: { ...AUTO_DEFAULTS },
+  autoReply: { ...AUTO_DEFAULTS }, notify: { on: true, msg: true, order: true, alert: true, sound: true, volume: 70, quiet: false, quietFrom: '23:00', quietTo: '08:00' },
 };
 store.settings = { ...DEF, ...(store.settings || {}), autoReply: { ...AUTO_DEFAULTS, ...(store.settings?.autoReply || {}) } };
 if (['fixed', 'ai'].includes(store.settings.autoReply.mode) && store.settings.autoReply.mode === 'ai') store.settings.autoReply.mode = 'smart';
@@ -57,7 +57,19 @@ const S = () => store.settings;
 let saveT; const save = () => { clearTimeout(saveT); const tmp = DATA + '.tmp'; const fd = fs.openSync(tmp, 'w'); fs.writeSync(fd, JSON.stringify(store)); fs.fsyncSync(fd); fs.closeSync(fd); fs.renameSync(tmp, DATA) };
 const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(save, 500) };
 const audit = (type, info = {}) => { store.audit.unshift({ t: Date.now(), type, ...info }); store.audit = store.audit.slice(0, 1000); saveSoon() };
-const alert = (kind, jid, text) => { store.alerts.unshift({ id: crypto.randomUUID(), t: Date.now(), kind, jid, text, read: false }); store.alerts = store.alerts.slice(0, 300); saveSoon() };
+// ---- live events: UI (SSE) + desktop notifier (Python, internal key) ----
+const UIS = new Set(), NOTS = new Set();
+const sse = (set, type, data) => { const line = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`; for (const s of set) try { s.write(line) } catch { set.delete(s) } };
+const emit = (type, data = {}) => sse(UIS, type, data);
+const NOTIFY_DEFAULTS = { on: true, msg: true, order: true, alert: true, sound: true, volume: 70, quiet: false, quietFrom: '23:00', quietTo: '08:00' };
+function notify(kind, title, body, jid) {   // kind: msg | order | alert → native Windows toast + soft chime (the Python side shows it)
+  const n = { ...NOTIFY_DEFAULTS, ...(S().notify || {}) }; if (!n.on || !n[kind]) return;
+  const quiet = n.quiet && inWindow(n.quietFrom, n.quietTo, hm(new Date(), S().tz));
+  const ev = { kind, title: String(title).slice(0, 80), body: String(body || '').slice(0, 160), jid: jid || '', sound: n.sound && !quiet, volume: Math.max(0, Math.min(100, +n.volume || 0)), quiet };
+  console.log(new Date().toISOString(), 'NOTIFY', kind, quiet ? 'quiet' : '', ev.sound ? 'sound' : 'silent');
+  sse(NOTS, 'notify', ev); emit('notify', ev);
+}
+const alert = (kind, jid, text) => { setImmediate(() => { emit('alert', { kind, jid }); if (kind === 'human' || kind === 'hot') notify('alert', kind === 'hot' ? 'عميل مهتم' : 'يحتاج ردك', text, jid) }); store.alerts.unshift({ id: crypto.randomUUID(), t: Date.now(), kind, jid, text, read: false }); store.alerts = store.alerts.slice(0, 300); saveSoon() };
 let byLidCache = { t: 0, m: {} };
 const phoneOf = j => (j || '').split('@')[0].split(':')[0];
 const canon = j => { j = normJid(j); return (isLid(j) && store.lidMap[j]) || j };
@@ -90,7 +102,10 @@ function learnFromKey(k) {
 }
 function txt(m) {
   const x = unwrap(m.message);
+  if (x.reactionMessage || x.protocolMessage || x.senderKeyDistributionMessage && Object.keys(x).length <= 2 || x.pollUpdateMessage || x.keepInChatMessage) return '';   // not a customer message
   return x.conversation || x.extendedTextMessage?.text || x.imageMessage?.caption || x.videoMessage?.caption || x.documentMessage?.caption ||
+    x.buttonsResponseMessage?.selectedDisplayText || x.templateButtonReplyMessage?.selectedDisplayText || x.listResponseMessage?.title || x.interactiveResponseMessage?.body?.text ||
+    (x.pollCreationMessage || x.pollCreationMessageV3)?.name || (x.ptvMessage ? '[فيديو]' : x.liveLocationMessage ? '[موقع]' : x.contactsArrayMessage ? '[جهة اتصال]' : '') ||
     (x.imageMessage ? '[صورة]' : x.audioMessage ? '[رسالة صوتية]' : x.locationMessage ? '[موقع]' : x.documentMessage ? '[ملف]' : x.stickerMessage ? '[ملصق]' : x.videoMessage ? '[فيديو]' : x.contactMessage ? '[جهة اتصال]' : '');
 }
 // WhatsApp timestamps arrive as number, numeric string, or protobuf Long {low, high}; seconds → ms
@@ -105,7 +120,7 @@ const MDIR = path.join(DIR, 'media'), MIDX = path.join(MDIR, 'idx'); fs.mkdirSyn
 const MKINDS = { imageMessage: 'image', videoMessage: 'video', audioMessage: 'audio', stickerMessage: 'sticker', documentMessage: 'document', documentWithCaptionMessage: 'document' };
 const safeId = id => String(id || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'application/pdf': 'pdf' };
-function unwrap(x) { x = x || {}; return x.ephemeralMessage?.message || x.viewOnceMessage?.message || x.viewOnceMessageV2?.message || x.documentWithCaptionMessage?.message || x }
+function unwrap(x) { x = x || {}; for (let i = 0; i < 4; i++) { const y = x.ephemeralMessage?.message || x.viewOnceMessage?.message || x.viewOnceMessageV2?.message || x.viewOnceMessageV2Extension?.message || x.documentWithCaptionMessage?.message || x.editedMessage?.message || x.deviceSentMessage?.message; if (!y) break; x = y } return x }
 function mediaOf(m) {
   const x = unwrap(m.message); const k = Object.keys(MKINDS).find(k => x[k]); if (!k) return null; const v = x[k];
   const mime = String(v.mimetype || '').split(';')[0] || (k === 'stickerMessage' ? 'image/webp' : '');
@@ -180,22 +195,64 @@ const pending = new Map();   // jid -> timer (one scheduled auto reply per custo
 let state = { status: 'starting', qr: null, me: null, syncing: false, lastSync: null, since: Date.now(), error: null, attempts: 0 }, realSend = null, realPresence = null, realRead = null, SOCK = null;
 const why = (c, reason, extra = {}) => { const t = SKIP_AR[reason] || reason; console.log(new Date().toISOString(), 'AUTO skip', reason, extra.detail || ''); const ch = store.chats[c.jid]; if (ch) ch.autoWhy = { t: Date.now(), why: t, code: reason };
   if (reason !== 'off') audit('auto_skip', { jid: c.jid, to: c.label || c.name || 'عميل', why: t, code: reason, ...extra }); saveSoon() };
+// ---- batching: wait for a short silence, then ONE reply that covers every unanswered message (nothing is ever dropped on cooldown) ----
+const BATCH = new Map();   // jid -> { first, timer }
+const QUIET_MS = () => FAKE_FAST ? +(process.env.WAE_QUIET_MS || 400) : 10e3, CAP_MS = () => FAKE_FAST ? +(process.env.WAE_CAP_MS || 2000) : 45e3;
+const MEDIA_ONLY = t => /^\[(صورة|رسالة صوتية|ملصق|فيديو|ملف|موقع|جهة اتصال)\]$/.test(String(t || '').trim());
+const ACK = 'وصلت 🌷 بشوفها وأرد عليك';
+const tOf = m => m.at || m.ts;
+function unanswered(c) {   // customer messages after our last outgoing message (auto or manual)
+  const lastOut = Math.max(0, ...c.messages.filter(m => m.fromMe).map(tOf));
+  return c.messages.filter(m => !m.fromMe && tOf(m) > lastOut && Date.now() - tOf(m) < 12 * 3600e3).sort((x, y) => tOf(x) - tOf(y));
+}
 async function onIncoming(c, msg) {
   if (c.isGroup || msg.fromMe || BAD_JID(c.jid)) return;
-  // freshness uses the time the message ARRIVED on this PC (a wrong PC clock or time zone used to drop every message silently)
-  const b = await brain('/think', { text: msg.text, customer: c.name, messages: msgsFor(c, 6), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });   // auto-reply: rules + owner FAQ only, never model text
-  const sc = Math.max(keywordScore(c), b?.lead_score || 0);
-  store.crm[c.jid] = { ...store.crm[c.jid], score: Math.max(sc, store.crm[c.jid]?.score || 0) };
+  const sc = keywordScore(c); store.crm[c.jid] = { ...store.crm[c.jid], score: Math.max(sc, store.crm[c.jid]?.score || 0) };
   if (S().notifyHot && sc >= S().hotScore) alert('hot', c.jid, `عميل مهتم: ${c.label || c.name || 'عميل'} — «${msg.text.slice(0, 60)}»`);
   else if (S().notifyNew && c.messages.filter(m => !m.fromMe).length <= 1) alert('new', c.jid, `عميل جديد: ${c.label || c.name || 'عميل'}`);
-  if (b && b.engine === 'ai') { b.reply = ''; b.safe_auto = false }   // belt and braces: model text is never auto-sent
-  const d = decide(c, msg, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: b }); d.engine = b?.engine || 'rules';
-  if (d.action === 'skip') { if (/^(already_handed_off|cooldown|daily_limit)$/.test(d.reason)) alert('human', c.jid, `يحتاج ردك: ${c.label || c.name || 'عميل'} — «${msg.text.slice(0, 60)}»`); return why(c, d.reason) }
-  console.log(new Date().toISOString(), 'AUTO queued', d.action, d.kind || '');
-  if (store.chats[c.jid]) store.chats[c.jid].autoWhy = { t: Date.now(), why: d.action === 'handoff' ? 'بيرد برسالة انتظار ويحوّلها لك' : 'بيرد بعد ثواني', code: 'queued' };
+  if (/(ابي|ابغى|أبغى|أبي|ودي|بغيت)\s*(اطلب|أطلب|بوكيه|ورد|باقة|تنسيق)|طلب جديد|اطلب/.test(msg.text)) notify('order', 'طلب جديد: ' + (c.label || c.name || 'عميل'), msg.text, c.jid);
+  if (!S().autoReply?.enabled) return why(c, 'off');
+  const now = Date.now(), B = BATCH.get(c.jid) || { first: now, n: 0 }; clearTimeout(B.timer); B.n++;
+  const wait = Math.max(0, Math.min(QUIET_MS(), B.first + CAP_MS() - now));
+  B.timer = setTimeout(() => { BATCH.delete(c.jid); flush(c.jid).catch(e => console.log(new Date().toISOString(), 'AUTO flush error', String(e?.message || e).slice(0, 120))) }, wait);
+  BATCH.set(c.jid, B); pending.set(c.jid, B.timer);
+  if (store.chats[c.jid]) store.chats[c.jid].autoWhy = { t: now, why: 'بيرد بعد ثواني (ينتظر لين يخلص العميل كلامه)', code: 'queued' };
+  console.log(new Date().toISOString(), 'AUTO wait', `msgs=${B.n}`, `in=${wait}ms`);
+}
+async function flush(jid, tries = 0) {
+  pending.delete(jid); const c0 = store.chats[jid]; if (!c0) return; const c = resolve(c0);
+  const list = unanswered(c0); if (!list.length) return why(c, 'owner_replied');
+  const last = list[list.length - 1], texts = list.map(m => m.text).filter(t => !MEDIA_ONLY(t)), mediaOnly = !texts.length;
+  const combined = texts.join('\n').slice(0, 1500);
   const ar = { ...AUTO_DEFAULTS, ...S().autoReply };
-  clearTimeout(pending.get(c.jid));
-  pending.set(c.jid, setTimeout(() => { pending.delete(c.jid); sendAuto(c.jid, msg, d).catch(() => {}) }, Math.max(0, ar.delaySec) * 1000));
+  const trigger = { ...last, text: mediaOnly ? last.text : combined };
+  let d;
+  if (mediaOnly) {
+    const pre = decide(c0, { ...trigger, text: 'x' }, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: null });
+    d = pre.action === 'skip' ? pre : { action: 'reply', reason: 'media', kind: 'media_ack', text: ACK };
+    if (d.action !== 'skip' || d.reason === 'cooldown') alert('human', jid, `${c.label || 'عميل'} أرسل ${last.text} — شوفه ورد عليه`);
+  } else {
+    const b = await brain('/think', { text: combined, customer: c.name, messages: msgsFor(c0, 8), after_hours: !inWindow(S().hoursFrom, S().hoursTo, hm(new Date(), S().tz)) }, { ai: false });   // rules + owner FAQ only
+    if (b && b.engine === 'ai') { b.reply = ''; b.safe_auto = false }
+    if (b?.lead_score) store.crm[jid] = { ...store.crm[jid], score: Math.max(b.lead_score, store.crm[jid]?.score || 0) };
+    d = decide(c0, trigger, { settings: S(), connected: state.status === 'connected' && !!realSend, history: store.autoHist, brain: b }); d.engine = b?.engine || 'rules';
+  }
+  if (d.action === 'skip' && d.reason === 'cooldown') {   // defer, never drop
+    const h = store.autoHist[jid] || { times: [] }, lastT = Math.max(0, ...h.times), waitMs = Math.max(1000, ar.cooldownMin * 60e3 - (Date.now() - lastT));
+    console.log(new Date().toISOString(), 'AUTO deferred', `batch=${list.length}`, 'cooldown', `in=${Math.round(waitMs / 1000)}s`);
+    if (store.chats[jid]) store.chats[jid].autoWhy = { t: Date.now(), why: `بيرد بعد ${Math.max(1, Math.round(waitMs / 1000))} ثانية (يهدّي عشان رقمك يبقى بأمان)`, code: 'queued' };
+    pending.set(jid, setTimeout(() => flush(jid, tries + 1).catch(() => {}), waitMs)); return;
+  }
+  if (d.action === 'skip') { if (/^(already_handed_off|daily_limit)$/.test(d.reason)) alert('human', jid, `يحتاج ردك: ${c.label || 'عميل'} — «${combined.slice(0, 60) || last.text}»`); console.log(new Date().toISOString(), 'AUTO batch', `msgs=${list.length}`, 'skip', d.reason); return why(c, d.reason) }
+  // never the same text twice in a row: prefer something new, else stay quiet and tell the owner
+  const prevAuto = [...c0.messages].filter(m => m.fromMe && m.auto).sort((x, y) => tOf(y) - tOf(x))[0];
+  if (prevAuto && prevAuto.text === d.text && Date.now() - tOf(prevAuto) < 6 * 3600e3) {
+    const alt = [ar.message, ar.handoffMessage].find(t => t && t !== prevAuto.text);
+    if (d.action === 'handoff' || !alt) { alert('human', jid, `يحتاج ردك: ${c.label || 'عميل'} — «${(combined || last.text).slice(0, 60)}»`); console.log(new Date().toISOString(), 'AUTO batch', `msgs=${list.length}`, 'skip same_text'); return why(c, 'same_text') }
+    d = { ...d, text: alt, kind: d.kind + '_alt' };
+  }
+  console.log(new Date().toISOString(), 'AUTO batch', `msgs=${list.length}`, '→', d.action, d.kind || '');
+  return sendAuto(jid, trigger, d);
 }
 const lastIncomingKey = c => { const m = [...c.messages].filter(x => !x.fromMe).sort((a, b) => b.ts - a.ts)[0]; return m ? { remoteJid: m.rjid || c.jid, id: m.id, fromMe: false } : null };
 const sendLog = auto => { store.sends.push({ t: Date.now(), auto }); store.sends = store.sends.filter(x => Date.now() - x.t < 864e5) };
@@ -209,7 +266,7 @@ async function sendAuto(jid, trigger, d, tries = 0) {
   if (!c.messages.some(m => !m.fromMe)) return why(C, 'not_first');
   if (!realSend || state.status !== 'connected') { audit('auto_reply_failed', { jid, err: 'الواتساب غير متصل' }); return why(C, 'offline') }
   const lim = limits(ar, store.wa.linkedAt); if (FAKE_FAST) lim.minGapMs = 0; const ok = canSend(store.sends, lim);
-  if (!ok.ok && ok.wait && tries < 6) { pending.set(jid, setTimeout(() => { pending.delete(jid); sendAuto(jid, trigger, d, tries + 1).catch(() => {}) }, ok.wait)); return }
+  if (!ok.ok && ok.wait && tries < 40) { console.log(new Date().toISOString(), 'AUTO deferred', 'gap', `in=${Math.round(ok.wait / 1000)}s`); pending.set(jid, setTimeout(() => { pending.delete(jid); sendAuto(jid, trigger, d, tries + 1).catch(() => {}) }, ok.wait)); return }
   if (!ok.ok) { alert('human', jid, `يحتاج ردك: ${C.label} — «${trigger.text.slice(0, 60)}»`); return why(C, 'rate_limit', { detail: ok.why || 'تهدئة' }) }
   const to = trigger.rjid && /@(lid|s\.whatsapp\.net)$/.test(trigger.rjid) ? trigger.rjid : jid;   // reply to the exact address the customer wrote from (LID or phone)
   try {
@@ -281,8 +338,9 @@ async function connect() {
       messages?.forEach(addMsg); tryLidRepo();
       state.syncing = true; state.lastSync = Date.now(); clearTimeout(state._st); state._st = setTimeout(() => state.syncing = false, 15e3); saveSoon();
     });
-    sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { chanSeen(m.key?.remoteJid); const r = addMsg(m); if (!m.key?.fromMe && type === 'notify') console.log(new Date().toISOString(), 'IN', `type=${type}`, `addr=${String(m.key?.remoteJid || '').split('@')[1] || '?'}`, r ? 'new' : 'dup/empty/filtered', `employee=${S().autoReply?.enabled ? 'on' : 'off'}`);
-      if (r && type === 'notify') { r.msg.at = Date.now(); if (!r.msg.fromMe) onIncoming(resolve(r.c), r.msg) } } saveSoon() });
+    sock.ev.on('messages.upsert', ({ messages, type }) => { for (const m of messages) { chanSeen(m.key?.remoteJid); if (type === 'notify' || type === 'append') { const jj = canon(m.key?.remoteJid); if (jj && !BAD_JID(jj)) setImmediate(() => emit('msg', { jid: jj, fromMe: !!m.key?.fromMe })) }
+      const r = addMsg(m); if (!m.key?.fromMe && type === 'notify') console.log(new Date().toISOString(), 'IN', `type=${type}`, `addr=${String(m.key?.remoteJid || '').split('@')[1] || '?'}`, r ? 'new' : (txt(m) ? 'dup' : 'not-a-message:' + Object.keys(unwrap(m.message)).filter(k => k !== 'messageContextInfo').slice(0, 2).join('+')), `employee=${S().autoReply?.enabled ? 'on' : 'off'}`);
+      if (r && type === 'notify') { r.msg.at = Date.now(); if (!r.msg.fromMe) { const rc = resolve(r.c); notify('msg', rc.label || rc.name || 'عميل', r.msg.text, rc.jid); onIncoming(rc, r.msg) } } } saveSoon() });
     sock.ev.on('lid-mapping.update', x => { for (const m of [].concat(x || [])) learnLid(m.lid, m.pn) });
     sock.ev.on('chats.upsert', cs => { (cs || []).forEach(c => { chanSeen(c.id, c.name); chatPn(c); chatMeta(c) }); saveSoon() }); sock.ev.on('chats.update', cs => { (cs || []).forEach(c => { chatPn(c); chatMeta(c) }); saveSoon() });
     sock.ev.on('contacts.upsert', cs => { cs.forEach(addContact); saveSoon() }); sock.ev.on('contacts.update', cs => { cs.forEach(addContact); saveSoon() });
@@ -403,6 +461,10 @@ r.post('/api/auth/login', (q, s) => {
   fails = { n: 0, t: Date.now() }; audit('login', {}); s.json({ ok: true, csrf: startSession(s) });
 });
 r.post('/api/auth/logout', (q, s) => { sessions.delete(cookie(q).sid); s.set('Set-Cookie', `sid=; Path=/${TOKEN}; Max-Age=0`); s.json({ ok: true }) });
+r.get('/internal/notify-events', (q, s) => {   // the desktop notifier (same PC, secret key from the launcher)
+  const k = process.env.NOTIFY_KEY || ''; if (!k || q.get('x-notify-key') !== k) return s.status(403).end();
+  s.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); s.flushHeaders?.(); s.write(': hi\n\n'); NOTS.add(s); q.on('close', () => NOTS.delete(s));
+});
 r.use(['/api', '/report.html', '/contacts.csv', '/contacts.vcf'], (q, s, n) => { const x = getSess(q); if (!x) return s.status(401).json({ error: 'login' }); if (q.method !== 'GET' && q.get('x-csrf') !== x.csrf) return s.status(403).json({ error: 'csrf' }); n() });
 r.post('/api/auth/password', (q, s) => {
   const { old, password } = q.body || {};
@@ -413,6 +475,11 @@ r.post('/api/auth/password', (q, s) => {
 });
 // ---- core
 let analysis = (() => { try { return JSON.parse(fs.readFileSync(path.join(DIR, 'analysis.json'), 'utf8')) } catch { return null } })();
+r.get('/api/events', (q, s) => {   // live UI updates (Server-Sent Events); the browser reconnects by itself
+  s.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); s.flushHeaders?.(); s.write('retry: 1500\nevent: hello\ndata: {}\n\n'); UIS.add(s); q.on('close', () => UIS.delete(s));
+});
+setInterval(() => { for (const set of [UIS, NOTS]) for (const s of set) try { s.write(': ping\n\n') } catch { set.delete(s) } }, 20e3).unref?.();
+r.post('/api/notify/test', (q, s) => { notify('msg', 'تجربة إشعار', 'كذا يوصلك الإشعار لما يكتب لك عميل 🌷', ''); s.json({ ok: true }) });
 r.get('/api/state', (q, s) => {
   const cs = chatsList(), ar = S().autoReply;
   s.json({ status: state.status, qr: state.qr, me: state.me, error: state.error, attempts: state.attempts, waitingSec: Math.round((Date.now() - state.since) / 1000), syncing: state.syncing, lastSync: state.lastSync, version: VERSION, sim: FAKE,
@@ -450,7 +517,7 @@ r.post('/api/send', async (q, s) => {
   if (confirm !== true || !jid || !store.chats[jid] || typeof text !== 'string' || !text.trim() || text.length > 4000) return s.status(400).json({ error: 'طلب غير صالح' });
   if (!realSend || state.status !== 'connected') return s.status(503).json({ error: 'الواتساب غير متصل' });
   try {
-    clearTimeout(pending.get(jid)); pending.delete(jid);            // owner replied → cancel the employee's pending reply
+    clearTimeout(pending.get(jid)); pending.delete(jid); clearTimeout(BATCH.get(jid)?.timer); BATCH.delete(jid);            // owner replied → cancel the employee's pending reply
     const ch0 = store.chats[jid]; const m = FAKE_FAST ? await realSend(jid, { text: text.trim() }) : await humanSend({ jid, text: text.trim(), send: realSend, presence: realPresence, read: realRead, readKey: lastIncomingKey(ch0), manual: true });
     sendLog(false); addMsg(m); const c = resolve(store.chats[jid]);
     audit('manual_send', { jid, to: c.label || c.name || 'عميل', len: text.length, preview: text.trim().slice(0, 80) }); saveSoon(); s.json({ ok: true });
@@ -498,6 +565,11 @@ r.post('/api/settings', (q, s) => {
   for (const k of ['hoursFrom', 'hoursTo']) if (/^\d\d:\d\d$/.test(b[k] || '')) cur[k] = b[k];
   for (const [k, lo, hi] of [['followUpDays', 0, 60], ['dormantDays', 3, 365], ['hotScore', 10, 100], ['sessionMinutes', 5, 720]]) if (b[k] !== '' && b[k] != null && Number.isFinite(+b[k])) cur[k] = Math.min(hi, Math.max(lo, +b[k]));
   for (const k of ['notifyHot', 'notifyNew', 'aiEnabled', 'tourDone', 'pinnedTop']) if (typeof b[k] === 'boolean') cur[k] = b[k];
+  if (b.notify && typeof b.notify === 'object') { const n = { ...NOTIFY_DEFAULTS, ...(cur.notify || {}) };
+    for (const k of ['on', 'msg', 'order', 'alert', 'sound', 'quiet']) if (typeof b.notify[k] === 'boolean') n[k] = b.notify[k];
+    if (Number.isFinite(+b.notify.volume)) n.volume = Math.max(0, Math.min(100, Math.round(+b.notify.volume)));
+    for (const k of ['quietFrom', 'quietTo']) if (/^\d\d:\d\d$/.test(b.notify[k] || '')) n[k] = b.notify[k];
+    cur.notify = n }
   if (Array.isArray(b.hintsOff)) cur.hintsOff = b.hintsOff.filter(x => typeof x === 'string').slice(0, 30);
   if (Array.isArray(b.templates)) cur.templates = b.templates.filter(x => x && typeof x.t === 'string' && x.t.trim()).slice(0, 40).map(x => ({ k: String(x.k || 'رد').slice(0, 30), t: x.t.slice(0, 1000) }));
   if (Array.isArray(b.tags)) cur.tags = [...new Set(b.tags.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().slice(0, 20)))].slice(0, 15);
@@ -530,6 +602,7 @@ r.get('/api/employee/check', async (q, s) => {   // «فحص الموظف»: eve
     ['brain', !!b0, b0 ? 'الردود الذكية جاهزة' : 'الردود الذكية مو جاهزة، بيرد بالرسالة الثابتة'],
     ['hour', h < lim.perHour, `ردود هالساعة ${h} من ${lim.perHour}`],
     ['day', dd < lim.perDay, `ردود اليوم ${dd} من ${lim.perDay}${lim.warm ? ' (رقم جديد، الحد يزيد مع الأيام)' : ''}`],
+    ['queue', true, `رسائل ينتظر يرد عليها الحين: ${BATCH.size + pending.size} (يستنى العميل يخلص كلامه، ويهدّي بين الردود بدل ما يتركها)`],
     ['clock', skew == null || Math.abs(skew) < 5, skew == null ? 'ما وصلت رسالة من عميل من فتحت البرنامج' : Math.abs(skew) < 5 ? 'ساعة الجهاز مضبوطة' : `ساعة الجهاز مختلفة ${Math.abs(skew)} دقيقة عن واتساب — الموظف يتحمّلها، بس اضبط الساعة`],
   ];
   const recent = store.audit.filter(a => /^auto_/.test(a.type)).slice(0, 12).map(a => ({ t: a.t, type: a.type, to: a.to, why: a.why || a.err || a.preview || '' }));
@@ -680,7 +753,7 @@ async function mktActions() {
   return acts.sort((a, b) => b.score - a.score).slice(0, 5);
 }
 r.get('/api/mkt/actions', async (q, s) => { const today = todayStr(), sent = (store.mkt ??= {})[today] || []; s.json({ actions: await mktActions(), cap: MKT_DAILY, opened: sent.length }) });
-r.post('/api/mkt/draft', async (q, s) => { const b = q.body || {}; const j = await brain('/mkt_draft', { goal: String(b.goal || '').slice(0, 200), template: String(b.template || '').slice(0, 500) }, { ai: true }); s.json(j || { text: b.template, engine: 'rules' }) });
+r.post('/api/mkt/draft', async (q, s) => { const b = q.body || {}; const j = await brain('/mkt_draft', { goal: String(b.goal || '').slice(0, 200), template: String(b.template || '').slice(0, 500) }, { ai: true }); if (!j) console.log(new Date().toISOString(), 'LLM mkt_draft: brain did not answer'); else if (j.engine !== 'ai') console.log(new Date().toISOString(), 'LLM mkt_draft fallback:', j.reason || ''); s.json(j || { text: b.template, engine: 'rules', reason: 'البرنامج ما رد، جرّب مرة ثانية' }); return; s.json(j || { text: b.template, engine: 'rules' }) });
 r.post('/api/mkt/opened', (q, s) => { const today = todayStr(), m = store.mkt ??= {}; for (const k of Object.keys(m)) if (k < today) delete m[k]; const l = m[today] ??= []; const j = String(q.body?.jid || ''); if (j && !l.includes(j)) l.push(j); saveSoon(); s.json({ opened: l.length, cap: MKT_DAILY }) });
 r.post('/api/ai/campaign', (q, s) => s.json(campaign(q.body || {}, S())));
 r.post('/api/ai/reengage', (q, s) => {

@@ -71,25 +71,54 @@ def do_think(body):
     except Exception as e: r["ai_error"] = str(e)[:120]
     return r
 
+STATUS_RE = re.compile(r"(طلبي|طلبيتي|طلبنا|البوكيه حقي|الورد حقي|اللي طلبته).{0,20}(وين|متى|وصل|جاهز|صار|خلص)|(وين|متى|ليش).{0,12}(طلبي|طلبنا|طلبيتي)|(ما وصل|تأخر|تاخر) (طلبي|الطلب)")
+INTENT_AR = {"complaint": "شكوى", "price": "السعر", "order": "طلب جديد", "delivery": "التوصيل أو الدفع أو الموقع", "status": "حالة طلبه", "meaning": "معنى ورد", "care": "العناية بالورد",
+             "catalog": "وش عندكم", "thanks": "شكر", "greeting": "سلام وترحيب", "human": "يبي يكلم شخص", "unknown": "سؤال عام"}
+REL = {"price": r"\d|ريال|ر\.س|سعر|بـ", "delivery": r"توصيل|نوصل|يوصل|التوصيل|الحي|الدفع|ندفع|مدى|تحويل|موقع|الدوام|نفتح", "status": r"طلب|يوصل|جاهز|نتأكد|أتأكد|اتأكد|بشيك|موعد",
+       "complaint": r"آسف|اسف|نعتذر|حقك|نعوضك|نعوّضك|أبشر|ابشر|نشوف", "greeting": r"هلا|حياك|أهلا|اهلا|وعليكم|مرحبا|يا هلا", "thanks": r"العفو|حياك|تسلم|الله يسعدك|بالعافية|بالعافيه|نتشرف",
+       "order": r"طلب|نجهز|أبشر|ابشر|المناسبة|المناسبه|التوصيل|متى|ريال|بوكيه", "care": r"موي|ماء|قص|شمس|يعيش|برود", "meaning": r"يرمز|معنى|يعني|رمز", "catalog": r"عندنا|بوكيه|تنسيق|ورد|صور",
+       "human": r"المسؤول|أكلمك|اتصل|نكلمك|يرد عليك", "unknown": r"."}
+def focus_texts(messages):
+    """The customer messages that are still waiting for an answer (after our last reply). That is what a suggestion must answer."""
+    ms = [m for m in (messages or []) if m.get("text")]; last_out = max([i for i, m in enumerate(ms) if m.get("fromMe")], default=-1)
+    t = [m["text"] for m in ms[last_out + 1:] if not m.get("fromMe")]
+    return t[-4:] or [m["text"] for m in ms if not m.get("fromMe")][-1:]
+def main_intent(b, text):
+    if STATUS_RE.search(text): return "status"
+    its = [i for i in b.intents(text) if i != "stop"]
+    for k in ("complaint", "human", "status", "price", "order", "delivery", "meaning", "care", "catalog", "thanks", "greeting"):
+        if k in its: return k
+    return "unknown"
+def relevant(reply, intent):
+    return bool(reply) and bool(re.search(REL.get(intent, "."), reply))
+
 def do_suggest(body):
-    kb = make_kb(body); texts = incoming(body.get("messages"), 3)
-    if not texts: return {"replies": []}
-    text = " ".join(texts); out = []
-    for seed in range(12):
-        r = think(text, str(body.get("customer", "")), kb=kb, rng=random.Random(seed))
-        rep = humanize(r["reply"])
-        if rep not in out: out.append(rep)
-        if len(out) >= 3: break
-    r = think(text, str(body.get("customer", "")), kb=kb, rng=random.Random(0))
-    if r["upsell"] and len(out) < 4: out.append(f"وتقدر تضيف {r['upsell'][0]} يكمّل الهدية 🌷")
-    teach = body.get("teach") or {}; fa = AI.faq_answer(teach, texts[-1]); engine = "rules"
-    if fa: out.insert(0, fa)
-    elif llm_on(body):
+    """3 short Saudi replies to what the customer is asking NOW (unanswered messages), grounded in the shop data; never random text."""
+    kb = make_kb(body); b = Brain(kb=kb, rng=random.Random(0)); teach = body.get("teach") or {}
+    texts = focus_texts(body.get("messages"))
+    if not texts: return {"replies": [], "intent": None}
+    text = " ".join(texts)[-800:]; intent = main_intent(b, text); out = []; engine = "rules"
+    def add(x):
+        x = humanize(x).strip() if x else ""
+        if x and x not in out and relevant(x, intent) and not AI.forbidden_hit(teach, x) and not b.guard(x, b.extract(text)): out.append(x)
+    fa = AI.faq_answer(teach, texts[-1]) or AI.faq_answer(teach, text)
+    if fa: out.append(fa)
+    dl = str((kb.get("shop") or {}).get("delivery") or "").strip()
+    if intent == "delivery" and dl: add(dl.rstrip(".") + " 🌷")
+    if intent == "status":
+        for x in ("أبشر 🌷 بشيك على طلبك الحين وأرد عليك خلال دقايق.", "طلبك عندنا وبإذن الله على موعده، بتأكد من وقت التوصيل وأبلغك 🌷", "حياك، عطني اسم صاحب الطلب أو رقمه وأتأكد لك فوراً."): add(x)
+    else:
+        for seed in range(10):
+            r = think(text, str(body.get("customer", "")), kb=kb, rng=random.Random(seed)); add(r["reply"])
+            if len(out) >= 3: break
+    if llm_on(body) and len(out) < 4 and intent != "status":
         try:
-            a, issues = AI.ai_reply(LLM, Brain(kb=kb), kb, teach, texts[-1], AI.history_msgs(body.get("messages"), 6), rule_reply=out[0] if out else "")
-            if not issues and a not in out: out.insert(0, a); engine = "ai"
+            hint = f"العميل الحين يسأل عن: {INTENT_AR.get(intent, '')}. رد على آخر رسالة له بس، جملة أو جملتين، وما تذكر أي سعر أو منتج مو موجود في المعلومات."
+            a, issues = AI.ai_reply(LLM, Brain(kb=kb), kb, teach, text, AI.history_msgs(body.get("messages"), 10)[:-1] if body.get("messages") else [], rule_reply=out[0] if out else "", hint=hint)
+            if not issues and relevant(a, intent) and a not in out: out.insert(1 if fa else 0, a); engine = "ai"
         except Exception: pass
-    return {"replies": out[:4], "intents": r["intents"], "missing": r["missing"], "score": r["lead_score"], "engine": engine}
+    r = think(text, str(body.get("customer", "")), kb=kb, rng=random.Random(0))
+    return {"replies": out[:3], "intent": intent, "intent_ar": INTENT_AR.get(intent), "intents": r["intents"], "missing": r["missing"], "score": r["lead_score"], "engine": engine}
 
 def do_extract(body):
     kb = make_kb(body); b = Brain(kb=kb, rng=random.Random(0)); texts = incoming(body.get("messages"), 20)
@@ -219,20 +248,53 @@ def do_plan_text(body):
     except Exception: pass
     return {"text": base, "engine": "rules"}
 
+MKT_LIB = {
+    "cold": ["هلا {الاسم} 🌷 سألتنا قبل عن الورد، حبيت أطمن هل لقيت اللي تبيه؟ إذا تبي أرسل لك صور تنسيقات اليوم أبشر.",
+             "هلا {الاسم}، عساك بخير 🌸 للحين نقدر نجهز لك اللي سألت عنه، تحب أحجزه لك؟",
+             "هلا {الاسم} 🌹 ما نسيناك! وصلنا ورد طازج اليوم، وش رأيك أوريك كم تنسيق يناسب طلبك؟"],
+    "winback": ["هلا {الاسم} 🌷 اشتقنا لك والله! وصلنا ورد طازج هالأسبوع وجهزنا تنسيقات جديدة، تحب أرسل لك صورها؟",
+                "هلا {الاسم}، عساك طيب 🌸 من زمان ما شفناك، إذا عندك مناسبة قريبة نجهز لك شي يفرّح، وش رأيك؟",
+                "هلا {الاسم} 🌹 حبينا نسلم عليك ونقولك إننا موجودين لأي هدية أو مناسبة، تبي نرتب لك شي؟"],
+    "occasion": ["هلا {الاسم} 🌷 {المناسبة} قربت! جهزنا تنسيقات خاصة لها، تحب أحجز لك واحد قبل الزحمة؟",
+                 "هلا {الاسم}، {المناسبة} على الأبواب 🌸 لا تفوتك الهدية، نجهزها لك ونوصلها بوقتها. وش اللون اللي تحبه؟",
+                 "هلا {الاسم} 🌹 بمناسبة {المناسبة} عندنا تنسيقات جديدة تنحب، تبي أرسل لك صورها؟"],
+    "general": ["هلا {الاسم} 🌷 وصلنا ورد طازج اليوم وتنسيقاته تجنن، تحب أرسل لك صورها؟",
+                "هلا {الاسم}، عساك بخير 🌸 إذا عندك مناسبة أو تبي تفرّح أحد، حنا جاهزين نجهز لك أحلى بوكيه. وش رأيك؟",
+                "هلا {الاسم} 🌹 حبينا نذكرك إننا موجودين لأي هدية، ونوصلها لين الباب. تبي نرتب لك شي؟"],
+}
+def mkt_library(goal, base):
+    g = goal or ""; key = "cold" if re.search(r"سأل|سعر|ما رد|متابع", g) else "winback" if re.search(r"قديم|رجع|ترجيع|اشتقنا", g) else "occasion" if re.search(r"مناسب|عيد|يوم|رمضان|تخرج|زواج|الأم|الحب", g) else "general"
+    occ = re.search(r"(عيد [^\s،]+|يوم [^\s،]+|رمضان|التخرج|الزواج)", g + " " + base)
+    return [x.replace("{المناسبة}", occ.group(1) if occ else "المناسبة") for x in MKT_LIB[key]]
+
 def do_mkt_draft(body):
-    """Saudi WhatsApp marketing draft (one short message with {الاسم}); AI if on, else the template the caller sent. Never sends anything."""
+    """Saudi WhatsApp marketing draft (one short message with {الاسم}). AI if available; else the ready template + a clear reason. Never sends anything."""
+    import time as _t
+    from app.brain.llm import log as llog
     base = str(body.get("template", ""))[:500]; goal = str(body.get("goal", ""))[:200]
-    if not llm_on(body): return {"text": base, "engine": "rules"}
-    kb = make_kb(body); teach = body.get("teach") or {}
-    try:
-        t = LLM.chat([{"role": "system", "content": "أنت تكتب رسائل واتساب قصيرة لمحل ورد سعودي باللهجة السعودية العامية. رسالة وحدة، سطرين أو ثلاثة، تبدأ بـ «هلا {الاسم}»، لطيفة ومو ملحّة، "
-                                                    "وتنتهي بسؤال بسيط يخلي العميل يرد. لا تذكر أسعار. لا تستخدم الفصحى. اكتب الرسالة فقط."},
-                      {"role": "user", "content": f"الهدف: {goal}\nاسم المحل: {kb['shop'].get('name','')}\nمسودة تقدر تحسنها:\n{base}"}], max_tokens=110, temperature=0.6)
-        t = AI.clean(t)
+    lib = mkt_library(goal, base); fb = lambda why: {"text": random.choice([x for x in lib if x != base] or lib), "engine": "library", "reason": why, "alts": lib}
+    if LLM is None: llog("mkt_draft: AI off (no model object)"); return fb("الذكاء المحلي مطفي في هذا التشغيل")
+    ok, why = LLM.available()
+    if body.get("ai") is not True: return fb("الذكاء المحلي مطفي من الإعدادات")
+    if not ok: llog(f"mkt_draft: unavailable: {why}"); return fb(why)
+    kb = make_kb(body); teach = body.get("teach") or {}; t0 = _t.time(); last = ""
+    msgs = [{"role": "system", "content": "أنت تكتب رسائل واتساب قصيرة لمحل ورد سعودي باللهجة السعودية العامية. رسالة وحدة، سطرين أو ثلاثة، تبدأ بـ «هلا {الاسم}»، لطيفة ومو ملحّة، "
+                                         "وتنتهي بسؤال بسيط يخلي العميل يرد. لا تذكر أسعار ولا أرقام. لا تستخدم الفصحى. اكتب الرسالة فقط."},
+            {"role": "user", "content": "الهدف: ترجيع عميل قديم\nاسم المحل: ورد الربيع\nمسودة تقدر تحسنها:\nهلا {الاسم} اشتقنا لك"},
+            {"role": "assistant", "content": "هلا {الاسم} 🌷 اشتقنا لك والله! وصلنا ورد طازج هالأسبوع وجهزنا تنسيقات جديدة، تحب أرسل لك صورها؟"},
+            {"role": "user", "content": f"الهدف: {goal}\nاسم المحل: {kb['shop'].get('name','')}\nمسودة تقدر تحسنها:\n{base}"}]
+    for temp in (0.4, 0.7):
+        try: t = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", AI.clean(LLM.chat(msgs, max_tokens=120, temperature=temp, wait=60))).strip()
+        except Exception as e: last = "الذكاء مشغول أو ما اشتغل" if "busy" in str(e) else "الذكاء ما اشتغل على هذا الجهاز"; llog(f"mkt_draft: error {type(e).__name__} {str(e)[:60]}"); break
         if "{الاسم}" not in t: t = re.sub(r"^(هلا|مرحبا|اهلا|أهلا)[^،,\n]*[،,]?", "هلا {الاسم}،", t, count=1) if re.match(r"^(هلا|مرحبا|اهلا|أهلا)", t) else "هلا {الاسم}، " + t
-        if not AI.guard(Brain(kb=kb), t, teach) and not re.search(r"\d{2,}", t) and len(t) < 300: return {"text": t, "engine": "ai"}
-    except Exception: pass
-    return {"text": base, "engine": "rules"}
+        bad = [x for x in ("فصحى" if AI.MSA.search(t) else "", "إنجليزي" if re.search(r"[A-Za-z]{4,}", t) else "", "أرقام" if re.search(r"\d{2,}", t) else "",
+                           "كلمة ممنوعة" if AI.forbidden_hit(teach, t) else "", "طويل" if len(t) > 320 else "", "فاضي" if len(t) < 15 else "",
+                           "مو سعودي" if not re.search(r"(اشتقنا|حياك|تبي|تحب|وش|ودنا|نجهز|جهزنا|عندنا|وصلنا|أبشر|ابشر|والله)", t) else "",
+                           "كلام غريب" if re.search(r"(علما|نصيحة|دعوة|لعملية|يشوفك|اشتقتلك|بيتنا|علينا|أرسل لنا|ارسل لنا)", t) else "") if x]
+        if not bad: llog(f"mkt_draft: ok in {int((_t.time() - t0) * 1000)}ms"); return {"text": t, "engine": "ai", "alts": lib}
+        last = "الذكاء كتب نص ما يناسب (" + "، ".join(bad) + ")"; llog(f"mkt_draft: rejected {bad}")
+    lib = mkt_library(goal, base); pick = random.choice([x for x in lib if x != base] or lib)
+    return {"text": pick, "engine": "library", "reason": last or "ما ضبط", "alts": lib}
 
 def do_chan_draft(body):
     """«اكتب منشور» for the owner's WhatsApp Channel: short Saudi post with one clear CTA. AI if on, else the ready template. Never sends."""

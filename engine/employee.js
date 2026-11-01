@@ -61,5 +61,5 @@ export function decide(chat, msg, ctx) {
 }
 export const SKIP_AR = { off: 'الموظف مطفي', not_customer: 'مو عميل (قروب/حالة)', from_me: 'رسالة منك', empty: 'رسالة بدون نص', old_message: 'رسالة قديمة',
   offline: 'الواتساب غير متصل', outside_schedule: 'خارج وقت عمل الموظف', owner_active: 'أنت ترد عليه بنفسك', cooldown: 'رد عليه قبل شوي', daily_limit: 'وصل حد الردود اليومي',
-  customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك وما رد عليه أحد للحين', rate_limit: 'حماية الرقم: وصل حد الإرسال',
+  customer_said_stop: 'العميل طلب ما نراسله', already_handed_off: 'سبق حوّلناه لك وما رد عليه أحد للحين', rate_limit: 'حماية الرقم: وصل حد الإرسال', same_text: 'رد عليه بنفس الكلام قبل شوي، خليناه لك',
   off_before_send: 'انطفى الموظف قبل الإرسال', owner_replied: 'رديت عليه بنفسك قبل الموظف', not_first: 'هو ما راسلنا أول، الموظف ما يبدأ محادثات', send_failed: 'الإرسال فشل' };
